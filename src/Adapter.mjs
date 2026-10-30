@@ -123,6 +123,30 @@ export default class Adapter {
                         if (!column || column.type.toUpperCase() !== type || (attribute.nullable ? Boolean(column.required || column.pk) : !column.required && !column.pk))
                             fail('UNSUPPORTED', 'Database column does not match the effective model.');
                     }
+                    const actualIndexes = await knex.raw('SELECT name, "unique" AS is_unique, origin, partial FROM pragma_index_list(?)', [table(path)]);
+                    const actualUnique = [];
+                    for (const index of actualIndexes) {
+                        if (!index.is_unique || index.origin === 'pk') continue;
+                        if (index.partial) fail('UNSUPPORTED', 'Partial unique indexes are unsupported.');
+                        const keys = await knex.raw('SELECT name, coll, "key" AS is_key FROM pragma_index_xinfo(?) ORDER BY seqno', [index.name]);
+                        const members = keys.filter(key => key.is_key);
+                        if (members.some(key => !key.name || key.coll !== 'BINARY')) fail('UNSUPPORTED', 'Unsupported unique index collation.');
+                        actualUnique.push(JSON.stringify(members.map(key => key.name)));
+                    }
+                    const expectedUnique = Object.values(entity.uniqueKeys).map(key => JSON.stringify(key)).sort();
+                    if (JSON.stringify(actualUnique.sort()) !== JSON.stringify(expectedUnique))
+                        fail('UNSUPPORTED', 'Database uniqueness does not match the effective model.');
+                    const foreignKeys = await knex.raw('SELECT id, seq, "table" AS target_table, "from" AS local_name, "to" AS target_name, on_update, on_delete FROM pragma_foreign_key_list(?) ORDER BY id, seq', [table(path)]);
+                    const actualRelations = [];
+                    for (const id of new Set(foreignKeys.map(key => key.id))) {
+                        const group = foreignKeys.filter(key => key.id === id);
+                        if (group.some(key => !['NO ACTION','RESTRICT'].includes(key.on_update) || !['NO ACTION','RESTRICT'].includes(key.on_delete)))
+                            fail('UNSUPPORTED', 'Cascading relations are unsupported.');
+                        actualRelations.push(JSON.stringify([group[0].target_table, group.map(key => key.local_name), group.map(key => key.target_name)]));
+                    }
+                    const expectedRelations = Object.values(entity.relations).map(relation => JSON.stringify([table(relation.target.path), relation.attributes, relation.target.attributes])).sort();
+                    if (JSON.stringify(actualRelations.sort()) !== JSON.stringify(expectedRelations))
+                        fail('UNSUPPORTED', 'Database relations do not match the effective model.');
                 } catch (error) { mapError(error); }
                 /**
                  * @param {any} input

@@ -121,3 +121,20 @@ test('provider rejects a missing or incompatible physical table', async () => {
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
+
+test('provider rejects missing uniqueness and foreign key constraints', async () => {
+    const schema = {$format:1,
+        '/app/parent':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}},
+        '/app/child':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'owner',type:{name:'ref'}}],relations:{owner:{attributes:['owner'],target:{path:'/app/parent',attributes:['id']}}}},
+    };
+    const env = await open({schema});
+    try {
+        const parentTable = 'dem_' + Buffer.from('/app/parent').toString('hex');
+        const childTable = 'dem_' + Buffer.from('/app/child').toString('hex');
+        await env.db.schema.raw('DROP INDEX ??', [`${parentTable}_u_name`]);
+        await assert.rejects(env.provider.get({path:'/app/parent'}),{code:'UNSUPPORTED'});
+        await env.db.schema.dropTable(childTable);
+        await env.db.schema.createTable(childTable, table => { table.increments('id'); table.integer('owner').notNullable(); });
+        await assert.rejects(env.provider.get({path:'/app/child'}),{code:'UNSUPPORTED'});
+    } finally { await env.close(); }
+});
