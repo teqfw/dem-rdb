@@ -1,0 +1,112 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import Container from '@teqfw/di';
+import knex from 'knex';
+import {register} from '@teqfw/dem/conformance';
+
+async function open({schema}) {
+    const c = new Container();
+    c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
+    c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
+    const compiler = await c.get('TeqFw_Dem_Compile$');
+    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
+    const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
+    const adapter = await c.get('TeqFw_DemRdb_Adapter$');
+    const provider = await adapter.open({model,knex:db});
+    await provider.createSchema();
+    return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>db.destroy()};
+}
+register({test,assert,open});
+
+test('schema creation is explicit and rejects an existing target', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        await assert.rejects(env.provider.createSchema(), {name:'DemRepositoryError',code:'CONFLICT'});
+        const repo = await env.provider.get({path:'/app/item'});
+        assert.deepEqual(await repo.create({record:{name:'preserved'}}), {record:{name:'preserved'}});
+    } finally { await env.close(); }
+});
+
+test('unsupported model is rejected before database effects', async () => {
+    const c = new Container();
+    c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
+    c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
+    const compiler = await c.get('TeqFw_Dem_Compile$');
+    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:1,'/app/record':{attributes:[{name:'data',type:{name:'json'}}]}}}]});
+    const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
+    try {
+        const adapter = await c.get('TeqFw_DemRdb_Adapter$');
+        await assert.rejects(adapter.open({model,knex:db}), {name:'DemRepositoryError',code:'UNSUPPORTED'});
+        assert.deepEqual(await db('sqlite_master').select('name').where('type','table'), []);
+    } finally { await db.destroy(); }
+});
+
+test('repository provider obtains the model and connection from its host configuration', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        const Provider = (await import('../src/Provider.mjs')).default;
+        let calls = 0;
+        const provider = new Provider({configuration:{get:async () => { calls++; return {}; }},adapter:{open:async () => env.provider}});
+        const repo = await provider.get({path:'/app/item'});
+        await repo.create({record:{name:'Ada'}});
+        assert.equal((await provider.get({path:'/app/item'})) !== null, true);
+        assert.equal(calls, 1);
+    } finally { await env.close(); }
+});
+
+test('host DI selects the relational provider through DEM contract', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        const c = new Container({preprocessors:['Test_Preprocessor$']});
+        c.addNamespaceRoot('Test_',new URL('./fixture',import.meta.url).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../src',import.meta.url).pathname,'.mjs');
+        c.enableTestMode();
+        c.register('TeqFw_DemRdb_Api_Configuration$', {get:async()=>({model:env.model,knex:env.db})});
+        const provider = await c.get('TeqFw_Dem_Api_RepositoryProvider$');
+        const repo = await provider.get({path:'/app/item'});
+        assert.deepEqual(await repo.create({record:{name:'Ada'}}),{record:{name:'Ada'}});
+    } finally { await env.close(); }
+});
+
+test('canonical numeric and underscore paths resolve', async () => {
+    const env = await open({schema:{$format:1,'/_app/1_item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        const repo = await env.provider.get({path:'/_app/1_item'});
+        assert.deepEqual(await repo.create({record:{name:'ok'}}), {record:{name:'ok'}});
+    } finally { await env.close(); }
+});
+
+test('writes fail before effects when foreign keys have been disabled', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        const repo = await env.provider.get({path:'/app/item'});
+        await env.db.raw('PRAGMA foreign_keys = OFF');
+        await assert.rejects(repo.create({record:{name:'unsafe'}}), {name:'DemRepositoryError',code:'UNSUPPORTED'});
+        const rows = await env.db('sqlite_master').select('name').where('type','table');
+        assert.equal(rows.length,1);
+        await env.db.raw('PRAGMA foreign_keys = ON');
+        assert.deepEqual(await repo.list({selection:{}}),{records:[]});
+    } finally { await env.close(); }
+});
+
+test('declared DEM indexes project to ordered SQLite index columns', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'a',type:{name:'text'}},{name:'b',type:{name:'integer'}}],indexes:{lookup:{attributes:['b','a']}}}}});
+    try {
+        const index = await env.db('sqlite_master').select('name').where({type:'index'}).first();
+        assert.ok(index);
+        const columns = await env.db.raw('SELECT name FROM pragma_index_info(?) ORDER BY seqno',[index.name]);
+        assert.deepEqual(columns.map(row => row.name),['b','a']);
+    } finally { await env.close(); }
+});
+
+test('unique key and index may share a logical name', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'a',type:{name:'text'}},{name:'b',type:{name:'text'}}],uniqueKeys:{lookup:['a']},indexes:{lookup:{attributes:['b']}}}}});
+    try {
+        const indexes = await env.db('sqlite_master').select('name').where({type:'index'});
+        assert.equal(indexes.length,2);
+        const repo = await env.provider.get({path:'/app/item'});
+        await repo.create({record:{a:'a',b:'b'}});
+        await assert.rejects(repo.create({record:{a:'a',b:'c'}}),{code:'CONFLICT'});
+    } finally { await env.close(); }
+});

@@ -1,0 +1,61 @@
+{
+  "name": "@teqfw/dem-rdb",
+  "version": "0.1.0",
+  "description": "Relational persistence adapter for TeqFW Domain Entity Model.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE",
+    "types.d.ts",
+    "skills/"
+  ],
+  "scripts": {
+    "test": "find test -name '*.test.mjs' -print0 | xargs -0 node --test",
+    "verify": "npm test && npm run typecheck",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@teqfw/dem": "^0.2.0",
+    "knex": "^3.1.0"
+  },
+  "peerDependencies": {
+    "@teqfw/di": "^2.11.0"
+  },
+  "devDependencies": {
+    "sqlite3": "^6.0.1",
+    "typescript": "^5.9.3",
+    "@types/node": "^22.20.5"
+  },
+  "teqfw": {
+    "fw": {
+      "di": {
+        "namespaces": [
+          {
+            "prefix": "TeqFw_DemRdb_",
+            "path": "./src",
+            "ext": ".mjs"
+          }
+        ]
+      }
+    }
+  },
+  "types": "types.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types.d.ts"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/teqfw/dem-rdb.git"
+  },
+  "homepage": "https://github.com/teqfw/dem-rdb#readme",
+  "publishConfig": {
+    "access": "public"
+  }
+}
