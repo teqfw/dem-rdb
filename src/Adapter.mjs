@@ -112,6 +112,18 @@ export default class Adapter {
                 if (typeof path !== 'string' || !/^\/(?:[a-z0-9_]+)(?:\/[a-z0-9_]+)*$/.test(path)) fail('INVALID_INPUT', 'Expected a canonical entity path.');
                 const entity = model.entities[path];
                 if (!entity) fail('NOT_FOUND', 'Entity not found.');
+                try {
+                    const columns = await knex.raw('SELECT name, type, "notnull" AS required, pk FROM pragma_table_info(?)', [table(path)]);
+                    const primary = columns.filter(column => column.pk).sort((a, b) => a.pk - b.pk).map(column => column.name);
+                    if (columns.length !== entity.attributes.length || JSON.stringify(primary) !== JSON.stringify(entity.primaryKey ?? []))
+                        fail('UNSUPPORTED', 'Database table does not match the effective model.');
+                    for (const attribute of entity.attributes) {
+                        const column = columns.find(value => value.name === attribute.name);
+                        const type = ['identity','ref','integer','boolean'].includes(attribute.type.name) ? 'INTEGER' : 'TEXT';
+                        if (!column || column.type.toUpperCase() !== type || (attribute.nullable ? Boolean(column.required || column.pk) : !column.required && !column.pk))
+                            fail('UNSUPPORTED', 'Database column does not match the effective model.');
+                    }
+                } catch (error) { mapError(error); }
                 /**
                  * @param {any} input
                  * @returns {any}

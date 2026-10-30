@@ -28,7 +28,7 @@ A version-matched consumer skill is included at `skills/teqfw-dem-rdb/`. Hosts m
 
 ## Development and context
 
-The package depends on `@teqfw/dem` 0.2.x. Until that version is published to npm, install a local DEM package archive or configure an equivalent workspace before running checks. Run `npm run verify` for tests and TypeScript checks; `teqfw-platform .` and `teqfw-esm-validator . --profile base` check TeqFW conventions. The initial implementation does not inspect an existing database schema for drift: the host must ensure it matches the model before opening repositories.
+The package depends on `@teqfw/dem` 0.2.x. Until that version is published to npm, install a local DEM package archive or configure an equivalent workspace before running checks. Run `npm run verify` for tests and TypeScript checks; `teqfw-platform .` and `teqfw-esm-validator . --profile base` check TeqFW conventions. Provider resolution checks table columns, declared SQLite storage types, nullability and primary keys. It does not fully audit existing unique, relation and index constraints or later schema drift; the host must ensure those constraints match the model.
 
 The cognitive context is an independent private repository, excluded from the npm artifact. Maintainers can mount it at `ctx/`:
 

@@ -110,3 +110,14 @@ test('unique key and index may share a logical name', async () => {
         await assert.rejects(repo.create({record:{a:'a',b:'c'}}),{code:'CONFLICT'});
     } finally { await env.close(); }
 });
+
+test('provider rejects a missing or incompatible physical table', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        const physical = 'dem_' + Buffer.from('/app/item').toString('hex');
+        await env.db.schema.dropTable(physical);
+        await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
+        await env.db.schema.createTable(physical, table => table.integer('name'));
+        await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
+    } finally { await env.close(); }
+});
