@@ -36,6 +36,8 @@ export default class Adapter {
         const mapError = error => {
             if (error?.name === 'DemRepositoryError') throw error;
             const message = String(error?.message ?? '');
+            if (error?.code === 'ER_DUP_ENTRY') fail('CONFLICT', 'Unique constraint failed.');
+            if (['ER_NO_REFERENCED_ROW_2','ER_ROW_IS_REFERENCED_2'].includes(error?.code)) fail('RELATION', 'Relation constraint failed.');
             if (error?.code === '23505' || /UNIQUE constraint failed|PRIMARY KEY constraint failed/i.test(message)) fail('CONFLICT', 'Unique constraint failed.');
             if (error?.code === '23503' || /FOREIGN KEY constraint failed/i.test(message)) fail('RELATION', 'Relation constraint failed.');
             fail('STORAGE', 'Relational storage operation failed.');
@@ -75,6 +77,7 @@ export default class Adapter {
                     v = String(v);
                 }
                 if (v !== null && a.type.name === 'boolean') v = Boolean(v);
+                if (Buffer.isBuffer(v)) { const decoded = v.toString('utf8'); if (!Buffer.from(decoded, 'utf8').equals(v)) fail('STORAGE', 'Stored text is not valid UTF-8.'); v = decoded; }
                 result[a.name] = v;
             }
             return normalize.record({entity, record: result, mode: 'complete'});
@@ -83,17 +86,64 @@ export default class Adapter {
          * @param {any} entity
          * @param {any} record
          * @param {boolean} pg
+         * @param {boolean} mysql
          * @returns {any}
          */
-        const toDb = (entity, record, pg) => Object.fromEntries(Object.entries(record).map(([key, value]) => {
+        const toDb = (entity, record, pg, mysql) => Object.fromEntries(Object.entries(record).map(([key, value]) => {
             const a = entity.attributes.find(x => x.name === key);
             if (value !== null && ['integer', 'identity', 'ref'].includes(a.type.name)) {
                 const n = Number(value);
-                if (!Number.isSafeInteger(n) || (pg && (n < -2147483648 || n > 2147483647))) fail('UNSUPPORTED', 'Value exceeds supported integer capacity.');
+                if (!Number.isSafeInteger(n) || ((pg || mysql) && (n < -2147483648 || n > 2147483647))) fail('UNSUPPORTED', 'Value exceeds supported integer capacity.');
                 return [key, n];
             }
+            if (mysql && typeof value === 'string' && Buffer.byteLength(value, 'utf8') > 512) fail('UNSUPPORTED', 'Text exceeds MariaDB storage capacity.');
             return [key, typeof value === 'boolean' ? Number(value) : value];
         }));
+        /**
+         * @param {object} deps
+         * @param {any} deps.knex
+         * @param {string} deps.path
+         * @param {any} deps.entity
+         * @returns {Promise<void>}
+         */
+        const validateMariadb = async function ({knex, path, entity}) {
+            const name = table(path, true);
+            const [tables] = await knex.raw('SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?', [name]);
+            if (tables.length !== 1 || tables[0].engine !== 'InnoDB') fail('UNSUPPORTED','MariaDB table must use InnoDB.');
+            const [columns] = await knex.raw('SELECT COLUMN_NAME AS name, DATA_TYPE AS type, COLUMN_TYPE AS column_type, EXTRA AS extra, CHARACTER_MAXIMUM_LENGTH AS width, IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?', [name]);
+            if (columns.length !== entity.attributes.length) fail('UNSUPPORTED','Database table does not match the effective model.');
+            for (const attribute of entity.attributes) {
+                const column = columns.find(c=>c.name===attribute.name);
+                const numeric = ['identity','ref','integer','boolean'].includes(attribute.type.name);
+                if (!column || column.type !== (numeric ? 'int' : 'varbinary') || (!numeric && Number(column.width) !== 512) || (numeric && /unsigned/i.test(column.column_type)) || (column.extra.includes('auto_increment') !== Boolean(attribute.generation)) || (column.nullable === 'YES') !== attribute.nullable)
+                    fail('UNSUPPORTED','Database column does not match the effective model.');
+            }
+            const [indexes] = await knex.raw('SELECT INDEX_NAME AS name, NON_UNIQUE AS non_unique, COLUMN_NAME AS column_name, SEQ_IN_INDEX AS position, SUB_PART AS prefix_length FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? ORDER BY INDEX_NAME, SEQ_IN_INDEX', [name]);
+            const primary = indexes.filter(i=>i.name==='PRIMARY').map(i=>i.column_name);
+            if (JSON.stringify(primary) !== JSON.stringify(entity.primaryKey ?? [])) fail('UNSUPPORTED','Database primary key does not match the model.');
+            const actualUnique = [];
+            for (const indexName of new Set(indexes.filter(i=>!i.non_unique && i.name!=='PRIMARY').map(i=>i.name))) {
+                const members = indexes.filter(i=>i.name===indexName);
+                if (members.some(i=>i.prefix_length !== null || !i.column_name)) fail('UNSUPPORTED','Partial or expression unique indexes are unsupported.');
+                actualUnique.push(JSON.stringify(members.map(i=>i.column_name)));
+            }
+            const expectedUnique = Object.values(entity.uniqueKeys).map(v=>JSON.stringify(v)).sort();
+            if (JSON.stringify(actualUnique.sort()) !== JSON.stringify(expectedUnique)) fail('UNSUPPORTED','Database uniqueness does not match the effective model.');
+            const [relations] = await knex.raw(`SELECT k.CONSTRAINT_NAME AS name,k.ORDINAL_POSITION AS position,k.COLUMN_NAME AS local_name,
+                k.REFERENCED_TABLE_NAME AS target_table,k.REFERENCED_COLUMN_NAME AS target_name,k.REFERENCED_TABLE_SCHEMA AS target_schema,
+                r.UPDATE_RULE AS on_update,r.DELETE_RULE AS on_delete,DATABASE() AS active_schema
+                FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r
+                ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME AND r.TABLE_NAME=k.TABLE_NAME
+                WHERE k.TABLE_SCHEMA=DATABASE() AND k.TABLE_NAME=? AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.CONSTRAINT_NAME,k.ORDINAL_POSITION`, [name]);
+            const actualRelations = [];
+            for (const relationName of new Set(relations.map(r=>r.name))) {
+                const group = relations.filter(r=>r.name===relationName);
+                if (group.some(r=>!['NO ACTION','RESTRICT'].includes(r.on_update) || !['NO ACTION','RESTRICT'].includes(r.on_delete) || r.target_schema !== r.active_schema)) fail('UNSUPPORTED','Unsupported foreign key behavior.');
+                actualRelations.push(JSON.stringify([group[0].target_table,group.map(r=>r.local_name),group.map(r=>r.target_name)]));
+            }
+            const expectedRelations = Object.values(entity.relations).map(r=>JSON.stringify([table(r.target.path,true),r.attributes,r.target.attributes])).sort();
+            if (JSON.stringify(actualRelations.sort()) !== JSON.stringify(expectedRelations)) fail('UNSUPPORTED','Database relations do not match the effective model.');
+        };
         /**
          * @param {object} deps
          * @param {any} deps.knex
@@ -144,13 +194,24 @@ export default class Adapter {
          * @returns {Promise<any>}
          */
         this.open = async function ({model, knex}) {
-            if (!model?.entities || typeof knex !== 'function' || !['sqlite3','pg'].includes(knex.client.config.client)) fail('UNSUPPORTED', 'A compiled model and supported Knex connection are required.');
+            if (!model?.entities || typeof knex !== 'function' || !['sqlite3','pg','mysql2'].includes(knex.client.config.client)) fail('UNSUPPORTED', 'A compiled model and supported Knex connection are required.');
             const pg = knex.client.config.client === 'pg';
-            if (!pg && knex.client.config.pool?.max !== 1) fail('UNSUPPORTED', 'SQLite requires a single connection pool.');
-            if (pg && Object.values(model.entities).some(entity => entity.attributes.some(a => Buffer.byteLength(a.name) > 63))) fail('UNSUPPORTED', 'PostgreSQL identifier length exceeds supported limits.');
-            for (const entity of Object.values(model.entities)) supported(entity);
+            const mysql = knex.client.config.client === 'mysql2';
+            const hashed = pg || mysql;
+            if (!hashed && knex.client.config.pool?.max !== 1) fail('UNSUPPORTED', 'SQLite requires a single connection pool.');
+            if (hashed && Object.values(model.entities).some(entity => entity.attributes.some(a => Buffer.byteLength(a.name) > (pg ? 63 : 64)))) fail('UNSUPPORTED', 'PostgreSQL identifier length exceeds supported limits.');
+            for (const entity of Object.values(model.entities)) {
+                supported(entity);
+                if (mysql) for (const key of [entity.primaryKey, ...Object.values(entity.uniqueKeys), ...Object.values(entity.indexes).map(index => index.attributes)]) {
+                    if (key && key.reduce((sum, name) => { const a = entity.attributes.find(item => item.name === name); return sum + (['identity','ref','integer','boolean'].includes(a.type.name) ? 4 : 512); }, 0) > 3072) fail('UNSUPPORTED', 'MariaDB index exceeds supported width.');
+                }
+            }
             try {
-                if (!pg) await knex.raw('PRAGMA foreign_keys = ON');
+                if (!hashed) await knex.raw('PRAGMA foreign_keys = ON');
+                else if (mysql) {
+                    const [rows] = await knex.raw('SELECT @@innodb_page_size AS page_size, @@sql_mode AS sql_mode, @@foreign_key_checks AS foreign_keys');
+                    if (Number(rows[0].page_size) !== 16384 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].sql_mode)) || Number(rows[0].foreign_keys) !== 1) fail('UNSUPPORTED', 'MariaDB requires strict mode, foreign keys and 16 KiB InnoDB pages.');
+                }
                 else if ((await knex.raw("SHOW server_encoding")).rows[0].server_encoding !== 'UTF8') fail('UNSUPPORTED', 'PostgreSQL requires UTF8 encoding.');
             } catch (e) { mapError(e); }
             /**
@@ -165,8 +226,9 @@ export default class Adapter {
                 if (!entity) fail('NOT_FOUND', 'Entity not found.');
                 try {
                     if (pg) await validatePostgresql({knex, path, entity});
+                    else if (mysql) await validateMariadb({knex, path, entity});
                     else {
-                    const columns = await knex.raw('SELECT name, type, "notnull" AS required, pk FROM pragma_table_info(?)', [table(path, pg)]);
+                    const columns = await knex.raw('SELECT name, type, "notnull" AS required, pk FROM pragma_table_info(?)', [table(path, hashed)]);
                     const primary = columns.filter(column => column.pk).sort((a, b) => a.pk - b.pk).map(column => column.name);
                     if (columns.length !== entity.attributes.length || JSON.stringify(primary) !== JSON.stringify(entity.primaryKey ?? []))
                         fail('UNSUPPORTED', 'Database table does not match the effective model.');
@@ -176,7 +238,7 @@ export default class Adapter {
                         if (!column || column.type.toUpperCase() !== type || (attribute.nullable ? Boolean(column.required || column.pk) : !column.required && !column.pk))
                             fail('UNSUPPORTED', 'Database column does not match the effective model.');
                     }
-                    const actualIndexes = await knex.raw('SELECT name, "unique" AS is_unique, origin, partial FROM pragma_index_list(?)', [table(path, pg)]);
+                    const actualIndexes = await knex.raw('SELECT name, "unique" AS is_unique, origin, partial FROM pragma_index_list(?)', [table(path, hashed)]);
                     const actualUnique = [];
                     for (const index of actualIndexes) {
                         if (!index.is_unique || index.origin === 'pk') continue;
@@ -189,7 +251,7 @@ export default class Adapter {
                     const expectedUnique = Object.values(entity.uniqueKeys).map(key => JSON.stringify(key)).sort();
                     if (JSON.stringify(actualUnique.sort()) !== JSON.stringify(expectedUnique))
                         fail('UNSUPPORTED', 'Database uniqueness does not match the effective model.');
-                    const foreignKeys = await knex.raw('SELECT id, seq, "table" AS target_table, "from" AS local_name, "to" AS target_name, on_update, on_delete FROM pragma_foreign_key_list(?) ORDER BY id, seq', [table(path, pg)]);
+                    const foreignKeys = await knex.raw('SELECT id, seq, "table" AS target_table, "from" AS local_name, "to" AS target_name, on_update, on_delete FROM pragma_foreign_key_list(?) ORDER BY id, seq', [table(path, hashed)]);
                     const actualRelations = [];
                     for (const id of new Set(foreignKeys.map(key => key.id))) {
                         const group = foreignKeys.filter(key => key.id === id);
@@ -197,7 +259,7 @@ export default class Adapter {
                             fail('UNSUPPORTED', 'Cascading relations are unsupported.');
                         actualRelations.push(JSON.stringify([group[0].target_table, group.map(key => key.local_name), group.map(key => key.target_name)]));
                     }
-                    const expectedRelations = Object.values(entity.relations).map(relation => JSON.stringify([table(relation.target.path, pg), relation.attributes, relation.target.attributes])).sort();
+                    const expectedRelations = Object.values(entity.relations).map(relation => JSON.stringify([table(relation.target.path, hashed), relation.attributes, relation.target.attributes])).sort();
                     if (JSON.stringify(actualRelations.sort()) !== JSON.stringify(expectedRelations))
                         fail('UNSUPPORTED', 'Database relations do not match the effective model.');
                     }
@@ -206,11 +268,11 @@ export default class Adapter {
                  * @param {any} input
                  * @returns {any}
                  */
-                const key = input => toDb(entity, normalize.key({entity, key: input}).values, pg);
+                const key = input => toDb(entity, normalize.key({entity, key: input}).values, pg, mysql);
                 /**
                  * @returns {any}
                  */
-                const query = () => knex(table(path, pg));
+                const query = () => knex(table(path, hashed));
                 /**
                  * @param {any} fn
                  * @returns {Promise<any>}
@@ -219,34 +281,48 @@ export default class Adapter {
                 return {
                     create: async params => wrap(async () => {
                         shape(params, ['record']);
-                        const value = toDb(entity, normalize.record({entity, record: params.record, mode:'create'}), pg);
+                        const value = toDb(entity, normalize.record({entity, record: params.record, mode:'create'}), pg, mysql);
                         return knex.transaction(async trx => {
-                            if (!pg) await ensureForeignKeys(trx);
+                            if (!hashed) await ensureForeignKeys(trx);
+                            if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
                             const generated = entity.attributes.find(a => a.type.name === 'identity' && a.generation);
                             if (pg && generated) {
-                                await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [table(path, pg)]);
+                                await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [table(path, hashed)]);
                                 if (!Object.hasOwn(value, generated.name)) {
-                                    const highest = await trx(table(path, pg)).max({value:generated.name}).first();
+                                    const highest = await trx(table(path, hashed)).max({value:generated.name}).first();
                                     const next = Number(highest.value ?? 0) + 1;
                                     if (next > 2147483647) fail('STORAGE', 'Identity capacity exhausted.');
                                     value[generated.name] = next;
                                 }
                             }
-                            const rows = await trx(table(path, pg)).insert(value).returning('*');
+                            if (mysql) {
+                                const inserted = await trx(table(path, hashed)).insert(value);
+                                if (generated && !Object.hasOwn(value, generated.name)) value[generated.name] = inserted[0];
+                                return {record: fromDb(entity, value)};
+                            }
+                            const rows = await trx(table(path, hashed)).insert(value).returning('*');
                             return {record: fromDb(entity, rows[0])};
                         });
                     }),
                     read: async params => wrap(async () => { shape(params, ['key']); return {record: fromDb(entity, await query().where(key(params.key)).first())}; }),
                     update: async params => wrap(async () => {
                         shape(params, ['key', 'changes']);
-                        const values = key(params.key), changes = toDb(entity, normalize.record({entity, record:params.changes, mode:'update'}), pg);
+                        const values = key(params.key), changes = toDb(entity, normalize.record({entity, record:params.changes, mode:'update'}), pg, mysql);
                         return knex.transaction(async trx => {
-                            if (!pg) await ensureForeignKeys(trx);
-                            const rows = await trx(table(path, pg)).where(values).update(changes).returning('*');
+                            if (!hashed) await ensureForeignKeys(trx);
+                            if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
+                            if (mysql) {
+                                const before = await trx(table(path, hashed)).where(values).forUpdate().first();
+                                if (!before) return {record:null};
+                                await trx(table(path, hashed)).where(values).update(changes);
+                                return {record:fromDb(entity, {...before,...changes})};
+                            }
+                            const rows = await trx(table(path, hashed)).where(values).update(changes).returning('*');
                             return {record: fromDb(entity, rows[0])};
                         });
                     }),
-                    delete: async params => wrap(async () => { shape(params, ['key']); const values = key(params.key); return knex.transaction(async trx => { if (!pg) await ensureForeignKeys(trx); return {deleted: (await trx(table(path, pg)).where(values).delete()) > 0}; }); }),
+                    delete: async params => wrap(async () => { shape(params, ['key']); const values = key(params.key); return knex.transaction(async trx => { if (!hashed) await ensureForeignKeys(trx);
+                            if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); } return {deleted: (await trx(table(path, hashed)).where(values).delete()) > 0}; }); }),
                     list: async params => wrap(async () => {
                         shape(params, ['selection']);
                         const s = selection.create({entity, selection:params.selection});
@@ -263,7 +339,7 @@ export default class Adapter {
                             const value = args[1].value;
                             if (value === null) return {sql:'0 = 1', bindings:[]};
                             const symbols = {eq:'=',ne:'<>',lt:'<',lte:'<=',gt:'>',gte:'>='};
-                            return {sql:`(?? IS NOT NULL AND ?? ${symbols[op]} ?)`, bindings:[name,name,toDb(entity,{[name]:value}, pg)[name]]};
+                            return {sql:`(?? IS NOT NULL AND ?? ${symbols[op]} ?)`, bindings:[name,name,toDb(entity,{[name]:value}, pg, mysql)[name]]};
                         };
                         let q = query().select('*');
                         if (s.where) { const p = expr(s.where); q = q.whereRaw(p.sql,p.bindings); }
@@ -278,32 +354,52 @@ export default class Adapter {
              * @returns {Promise<void>}
              */
             const createSchema = async function () {
+                const created = [];
+                const foreign = [];
+                /**
+                 * @param {any} trx
+                 * @returns {Promise<void>}
+                 */
+                const execute = async function (trx) {
+                    if (!hashed) await ensureForeignKeys(trx);
+                    if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
+                    for (const path of Object.keys(model.entities)) if (await trx.schema.hasTable(table(path, hashed))) fail('CONFLICT', 'Target table already exists.');
+                    for (const [path,entity] of Object.entries(model.entities)) {
+                        await trx.schema.createTable(table(path, hashed), t => {
+                            if (mysql) t.engine('InnoDB');
+                            for (const a of entity.attributes) {
+                                let c;
+                                if (a.type.name === 'identity' && a.generation) { if (pg) t.integer(a.name).primary(); else if (mysql) t.specificType(a.name, 'int NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
+                                if (['identity','ref','integer','boolean'].includes(a.type.name)) c = t.integer(a.name);
+                                else c = pg ? t.specificType(a.name, 'text COLLATE "C"') : mysql ? t.specificType(a.name, 'varbinary(512)') : t.text(a.name);
+                                if (!a.nullable) c.notNullable();
+                            }
+                            if (entity.primaryKey && !entity.attributes.some(a => a.type.name === 'identity' && a.generation)) t.primary(entity.primaryKey);
+                            for (const [name, columns] of Object.entries(entity.uniqueKeys)) t.unique(columns, hashed ? `${table(path, hashed)}_u_${createHash('sha256').update(name).digest('hex').slice(0, 16)}` : `${table(path, hashed)}_u_${name}`);
+                            for (const [name, columns] of Object.entries(entity.indexes)) t.index(columns.attributes, hashed ? `${table(path, hashed)}_i_${createHash('sha256').update(name).digest('hex').slice(0, 16)}` : `${table(path, hashed)}_i_${name}`);
+                            if (!hashed) for (const [index, relation] of Object.values(entity.relations).entries()) t.foreign(relation.attributes, `${table(path, hashed)}_f_${index}`).references(relation.target.attributes).inTable(table(relation.target.path, hashed));
+                        });
+                        created.push(path);
+                    }
+                    if (hashed) for (const [path, entity] of Object.entries(model.entities)) {
+                        for (const [index, relation] of Object.values(entity.relations).entries()) {
+                            const name = `${table(path, hashed)}_f_${index}`;
+                            await trx.schema.alterTable(table(path, hashed), t => t.foreign(relation.attributes, name).references(relation.target.attributes).inTable(table(relation.target.path, hashed)));
+                            foreign.push({path,name,attributes:relation.attributes});
+                        }
+                    }
+                };
                 try {
-                    await knex.transaction(async trx => {
-                        if (!pg) await ensureForeignKeys(trx);
-                        for (const [path,entity] of Object.entries(model.entities)) {
-                            if (await trx.schema.hasTable(table(path, pg))) fail('CONFLICT', 'Target table already exists.');
-                            await trx.schema.createTable(table(path, pg), t => {
-                                for (const a of entity.attributes) {
-                                    let c;
-                                    if (a.type.name === 'identity' && a.generation) { if (pg) t.integer(a.name).primary(); else t.increments(a.name); continue; }
-                                    if (['identity','ref','integer','boolean'].includes(a.type.name)) c = t.integer(a.name);
-                                    else c = pg ? t.specificType(a.name, 'text COLLATE "C"') : t.text(a.name);
-                                    if (!a.nullable) c.notNullable();
-                                }
-                                if (entity.primaryKey && !entity.attributes.some(a => a.type.name === 'identity' && a.generation)) t.primary(entity.primaryKey);
-                                for (const [name, columns] of Object.entries(entity.uniqueKeys)) t.unique(columns, pg ? `${table(path, pg)}_u_${createHash('sha256').update(name).digest('hex').slice(0, 16)}` : `${table(path, pg)}_u_${name}`);
-                                for (const [name, columns] of Object.entries(entity.indexes)) t.index(columns.attributes, pg ? `${table(path, pg)}_i_${createHash('sha256').update(name).digest('hex').slice(0, 16)}` : `${table(path, pg)}_i_${name}`);
-                                if (!pg) for (const [index, relation] of Object.values(entity.relations).entries()) t.foreign(relation.attributes, `${table(path, pg)}_f_${index}`).references(relation.target.attributes).inTable(table(relation.target.path, pg));
-                            });
-                        }
-                        if (pg) for (const [path, entity] of Object.entries(model.entities)) {
-                            await trx.schema.alterTable(table(path, pg), t => {
-                                for (const [index, relation] of Object.values(entity.relations).entries()) t.foreign(relation.attributes, `${table(path, pg)}_f_${index}`).references(relation.target.attributes).inTable(table(relation.target.path, pg));
-                            });
-                        }
-                    });
-                } catch (e) { mapError(e); }
+                    if (mysql) await execute(knex); else await knex.transaction(execute);
+                } catch (error) {
+                    if (mysql) {
+                        try {
+                            for (const relation of foreign.reverse()) await knex.schema.alterTable(table(relation.path, true), t=>t.dropForeign(relation.attributes, relation.name));
+                            for (const path of created.reverse()) await knex.schema.dropTableIfExists(table(path, true));
+                        } catch { fail('STORAGE', 'Schema creation failed and cleanup was incomplete.'); }
+                    }
+                    mapError(error);
+                }
             };
             return {get, createSchema};
         };

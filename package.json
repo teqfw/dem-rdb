@@ -18,7 +18,8 @@
     "test": "find test/unit test/integration.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
     "verify": "npm test && npm run typecheck",
     "typecheck": "tsc -p tsconfig.json",
-    "test:postgresql": "node --test test/optin/Postgresql.test.mjs"
+    "test:postgresql": "node --test test/optin/Postgresql.test.mjs",
+    "test:mariadb": "node --test test/optin/Mariadb.test.mjs"
   },
   "dependencies": {
     "@teqfw/dem": "^0.2.0",
@@ -31,7 +32,8 @@
     "sqlite3": "^6.0.1",
     "typescript": "^5.9.3",
     "@types/node": "^22.20.5",
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "mysql2": "^3.24.5"
   },
   "teqfw": {
     "fw": {

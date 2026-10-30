@@ -1,0 +1,119 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import Container from '@teqfw/di';
+import knex from 'knex';
+import {register} from '@teqfw/dem/conformance';
+import {createHash,randomBytes} from 'node:crypto';
+
+const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE};
+if (Object.values(connection).some(value => !value)) throw new Error('MariaDB test connection environment is incomplete.');
+const table = path => 'dem_' + createHash('sha256').update(path).digest('hex').slice(0,32);
+async function open({schema}) {
+    const db = knex({client:'mysql2',connection,pool:{min:0,max:4}});
+    try {
+        const c = new Container();
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+        const compiler = await c.get('TeqFw_Dem_Compile$');
+        const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
+        for (const path of Object.keys(model.entities)) if (await db.schema.hasTable(table(path))) throw new Error('A test table already exists; refusing to modify it.');
+        const adapter = await c.get('TeqFw_DemRdb_Adapter$');
+        const provider = await adapter.open({model,knex:db});
+        await provider.createSchema();
+        return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{
+            try {
+                for (const [path,entity] of Object.entries(model.entities)) for (const [index,relation] of Object.values(entity.relations).entries())
+                    await db.schema.alterTable(table(path), t=>t.dropForeign(relation.attributes,`${table(path)}_f_${index}`));
+                for (const path of Object.keys(model.entities).reverse()) await db.schema.dropTable(table(path));
+            } finally { await db.destroy(); }
+        }};
+    } catch (error) { await db.destroy(); throw error; }
+}
+register({test,assert,open});
+
+test('binary text preserves trailing spaces, case and Unicode order', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}}}});
+    try {
+        const repo = await env.provider.get({path:'/app/item'});
+        for (const name of ['a','a ','A','🌍']) await repo.create({record:{name}});
+        assert.deepEqual((await repo.list({selection:{}})).records.map(row=>row.name),['A','a','a ','🌍']);
+    } finally { await env.close(); }
+});
+
+test('MariaDB rejects oversized text before insertion', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        const repo = await env.provider.get({path:'/app/item'});
+        await assert.rejects(repo.create({record:{name:'x'.repeat(513)}}),{code:'UNSUPPORTED'});
+        assert.deepEqual(await repo.list({selection:{}}),{records:[]});
+    } finally { await env.close(); }
+});
+
+test('explicit and concurrent generated MariaDB identities remain unique', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
+    try {
+        const repo = await env.provider.get({path:'/app/item'});
+        await repo.create({record:{id:'1',name:'explicit'}});
+        const records = await Promise.all(Array.from({length:12},(_,i)=>repo.create({record:{name:String(i)}})));
+        assert.equal(new Set(records.map(item=>item.record.id)).size,12);
+        assert.ok(records.every(item=>item.record.id !== '1'));
+    } finally { await env.close(); }
+});
+
+test('invalid stored UTF-8 is not silently changed', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        const repo = await env.provider.get({path:'/app/item'});
+        await env.db(table('/app/item')).insert({name:Buffer.from([0xff])});
+        await assert.rejects(repo.list({selection:{}}),{code:'STORAGE'});
+    } finally { await env.close(); }
+});
+
+test('cyclic MariaDB relationships can be created and enforced', async () => {
+    const schema = {$format:1,
+        '/app/a':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'b',type:{name:'ref'},nullable:true}],relations:{b:{attributes:['b'],target:{path:'/app/b',attributes:['id']}}}},
+        '/app/b':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'a',type:{name:'ref'},nullable:true}],relations:{a:{attributes:['a'],target:{path:'/app/a',attributes:['id']}}}},
+    };
+    const env = await open({schema});
+    try {
+        const a = await env.provider.get({path:'/app/a'}), b = await env.provider.get({path:'/app/b'});
+        const first = await a.create({record:{b:null}}), second = await b.create({record:{a:first.record.id}});
+        assert.equal((await a.update({key:{kind:'primary',values:{id:first.record.id}},changes:{b:second.record.id}})).record.b,second.record.id);
+    } finally { await env.close(); }
+});
+
+test('entity containing only a generated identity accepts an empty record', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    try {
+        const repo = await env.provider.get({path:'/app/item'});
+        const result = await repo.create({record:{}});
+        assert.match(result.record.id,/^[1-9][0-9]*$/);
+    } finally { await env.close(); }
+});
+
+test('provider rejects an unexpected uniqueness constraint', async () => {
+    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    try {
+        await env.db.schema.alterTable(table('/app/item'), t=>t.unique(['name'],'unexpected_unique'));
+        await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
+    } finally { await env.close(); }
+});
+
+test('a failed schema creation removes tables created by the attempt', async () => {
+    const suffix = randomBytes(8).toString('hex');
+    const first = `/cleanup_${suffix}/a`, second = `/cleanup_${suffix}/b`;
+    const schema = {$format:1,[first]:{attributes:[{name:'name',type:{name:'text'}}]},[second]:{attributes:[{name:'name',type:{name:'text'}}]}};
+    const db = knex({client:'mysql2',connection,pool:{min:0,max:1}});
+    try {
+        for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
+        const c = new Container();
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+        const compiler = await c.get('TeqFw_Dem_Compile$');
+        const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
+        const provider = await (await c.get('TeqFw_DemRdb_Adapter$')).open({model,knex:db});
+        db.on('query', query => { if (/^create table/i.test(query.sql) && query.sql.includes(table(second))) throw new Error('Injected DDL failure'); });
+        await assert.rejects(provider.createSchema(),{code:'STORAGE'});
+        for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
+    } finally { await db.destroy(); }
+});
