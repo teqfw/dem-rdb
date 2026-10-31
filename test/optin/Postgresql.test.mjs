@@ -41,7 +41,7 @@ test('out-of-range identity is rejected without an insert', async () => {
     const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
-        await assert.rejects(repo.create({record:{id:'2147483648',name:'bad'}}),{code:'UNSUPPORTED'});
+        await assert.rejects(repo.create({record:{id:'9223372036854775808',name:'bad'}}),{code:'UNSUPPORTED'});
         assert.deepEqual(await repo.list({selection:{}}),{records:[]});
     } finally { await env.close(); }
 });
@@ -103,4 +103,16 @@ test('long logical paths and key names map to valid physical identifiers', async
 test('shared all-type value workload uses exact logical observations',async()=>{
     const env=await open({schema:valueSchema,map:valueMap});
     try { await exercise({provider:env.provider,assert}); } finally { await env.close(); }
+});
+
+
+test('PostgreSQL generated identity exhaustion rolls back without precision loss',async()=>{
+    const env=await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    try {
+        const repo=await env.provider.get({path:'/app/item'});
+        const record={id:'9223372036854775807'};
+        assert.deepEqual(await repo.create({record}),{record});
+        await assert.rejects(repo.create({record:{}}),{code:'STORAGE'});
+        assert.deepEqual(await repo.list({selection:{}}),{records:[record]});
+    } finally {await env.close();}
 });

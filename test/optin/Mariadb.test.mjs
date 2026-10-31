@@ -9,8 +9,8 @@ import {createHash,randomBytes} from 'node:crypto';
 const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE};
 if (Object.values(connection).some(value => !value)) throw new Error('MariaDB test connection environment is incomplete.');
 const table = path => 'dem_' + createHash('sha256').update(path).digest('hex').slice(0,32);
-async function open({schema,map}) {
-    const db = knex({client:'mysql2',connection:{...connection,supportBigNumbers:true,bigNumberStrings:true},pool:{min:0,max:4}});
+async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberStrings:true}}) {
+    const db = knex({client:'mysql2',connection:{...connection,...driverOptions},pool:{min:0,max:4}});
     try {
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
@@ -125,4 +125,23 @@ test('a failed schema creation removes tables created by the attempt', async () 
 test('shared all-type value workload uses exact logical observations',async()=>{
     const env=await open({schema:valueSchema,map:valueMap});
     try { await exercise({provider:env.provider,assert}); } finally { await env.close(); }
+});
+
+
+test('SQL casts preserve values even when the driver is configured for numeric conversions',async()=>{
+    const env=await open({schema:valueSchema,map:valueMap,driverOptions:{supportBigNumbers:false,bigNumberStrings:false,decimalNumbers:true}});
+    try {await exercise({provider:env.provider,assert});} finally {await env.close();}
+});
+
+test('MariaDB unsigned native identity boundary is exact and exhausts atomically',async()=>{
+    const env=await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    try {
+        const repo=await env.provider.get({path:'/app/item'});
+        const record={id:'18446744073709551615'};
+        assert.deepEqual(await repo.create({record}),{record});
+        assert.deepEqual(await repo.read({key:{kind:'primary',values:record}}),{record});
+        await assert.rejects(repo.create({record:{id:'18446744073709551616'}}),{code:'UNSUPPORTED'});
+        await assert.rejects(repo.create({record:{}}),{code:'STORAGE'});
+        assert.deepEqual(await repo.list({selection:{}}),{records:[record]});
+    } finally {await env.close();}
 });

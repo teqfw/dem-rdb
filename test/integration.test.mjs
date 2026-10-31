@@ -145,3 +145,17 @@ test('all core DEM values round-trip with exact selection semantics',async()=>{
     const env=await open({schema:valueSchema,map:valueMap});
     try { await exercise({provider:env.provider,assert}); } finally { await env.close(); }
 });
+
+
+test('SQLite native identity boundary is exact and exhaustion leaves contents unchanged',async()=>{
+    const env=await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    try {
+        const repo=await env.provider.get({path:'/app/item'});
+        const record={id:'9223372036854775807'};
+        assert.deepEqual(await repo.create({record}),{record});
+        assert.deepEqual(await repo.read({key:{kind:'primary',values:record}}),{record});
+        await assert.rejects(repo.create({record:{id:'9223372036854775808'}}),{code:'UNSUPPORTED'});
+        await assert.rejects(repo.create({record:{}}),{code:'STORAGE'});
+        assert.deepEqual(await repo.list({selection:{}}),{records:[record]});
+    } finally {await env.close();}
+});

@@ -78,6 +78,15 @@ export default class Adapter {
          */
         const toDb = (entity,record,pg,mysql) => codec.encode({entity,record,dialect:pg ? 'pg' : mysql ? 'mysql2' : 'sqlite3'});
         /**
+         * @param {any} entity
+         * @param {any} connection
+         * @returns {Array<any>}
+         */
+        const projection = function (entity,connection) {
+            return entity.attributes.map(a=>codec.numeric(a) || a.type.name==='decimal' && !['text','longblob','varbinary(512)'].includes(codec.type({attribute:a,dialect:connection.client.config.client,indexed:codec.indexed(entity,a.name)}))
+                ? connection.raw('CAST(?? AS '+(connection.client.config.client==='mysql2' ? 'CHAR' : 'TEXT')+') AS ??',[a.name,a.name]) : a.name);
+        };
+        /**
          * @param {object} deps
          * @param {any} deps.knex
          * @param {string} deps.path
@@ -254,7 +263,7 @@ export default class Adapter {
                 /**
                  * @returns {any}
                  */
-                const query = () => knex(table(path, hashed));
+                const query = () => knex(table(path, hashed)).select(projection(entity,knex));
                 /**
                  * @param {any} fn
                  * @returns {Promise<any>}
@@ -273,18 +282,21 @@ export default class Adapter {
                             if (pg && generated) {
                                 await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [table(path, hashed)]);
                                 if (!Object.hasOwn(value, generated.name)) {
-                                    const highest = await trx(table(path, hashed)).max({value:generated.name}).first();
-                                    const next = Number(highest.value ?? 0) + 1;
-                                    if (next > 2147483647) fail('STORAGE', 'Identity capacity exhausted.');
-                                    value[generated.name] = next;
+                                    const highest = await trx(table(path, hashed)).select(trx.raw('CAST(MAX(??) AS TEXT) AS value',[generated.name])).first();
+                                    const next = BigInt(highest.value ?? '0') + 1n;
+                                    if (next > 9223372036854775807n) fail('STORAGE', 'Identity capacity exhausted.');
+                                    value[generated.name] = next.toString();
                                 }
                             }
                             if (mysql) {
-                                const inserted = await trx(table(path, hashed)).insert(value);
-                                if (generated && !Object.hasOwn(value, generated.name)) value[generated.name] = inserted[0];
+                                await trx(table(path, hashed)).insert(value);
+                                if (generated && !Object.hasOwn(value, generated.name)) {
+                                    const [rows]=await trx.raw('SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id');
+                                    value[generated.name]=rows[0].id;
+                                }
                                 return {record: fromDb(entity, value)};
                             }
-                            const rows = await trx(table(path, hashed)).insert(value).returning('*');
+                            const rows = await trx(table(path, hashed)).insert(value).returning(projection(entity,trx));
                             return {record: fromDb(entity, rows[0])};
                         });
                     }),
@@ -296,12 +308,12 @@ export default class Adapter {
                             if (!hashed) await ensureForeignKeys(trx);
                             if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
                             if (mysql) {
-                                const before = await trx(table(path, hashed)).where(values).forUpdate().first();
+                                const before = await trx(table(path, hashed)).select(projection(entity,trx)).where(values).forUpdate().first();
                                 if (!before) return {record:null};
                                 await trx(table(path, hashed)).where(values).update(changes);
                                 return {record:fromDb(entity, {...before,...changes})};
                             }
-                            const rows = await trx(table(path, hashed)).where(values).update(changes).returning('*');
+                            const rows = await trx(table(path, hashed)).where(values).update(changes).returning(projection(entity,trx));
                             return {record: fromDb(entity, rows[0])};
                         });
                     }),
@@ -311,7 +323,7 @@ export default class Adapter {
                         shape(params, ['selection']);
                         const s = selection.create({entity, selection:params.selection});
                         if (entity.attributes.some(a=>mysql && codec.type({attribute:a,dialect:'mysql2',indexed:codec.indexed(entity,a.name)})==='longblob' || ['decimal','datetime','binary','json','vector'].includes(a.type.name) || a.type.name==='integer' && (a.type.params.bits===64 || a.type.params.unsigned && a.type.params.bits===32)))
-                            return evaluate.exec({entity,records:(await query().select('*')).map(row=>fromDb(entity,row)),selection:s});
+                            return evaluate.exec({entity,records:(await query()).map(row=>fromDb(entity,row)),selection:s});
                         /**
                          * @param {any} node
                          * @returns {any}
@@ -327,9 +339,9 @@ export default class Adapter {
                             const symbols = {eq:'=',ne:'<>',lt:'<',lte:'<=',gt:'>',gte:'>='};
                             return {sql:`(?? IS NOT NULL AND ?? ${symbols[op]} ?)`, bindings:[name,name,toDb(entity,{[name]:value}, pg, mysql)[name]]};
                         };
-                        let q = query().select('*');
+                        let q = query();
                         if (s.where) { const p = expr(s.where); q = q.whereRaw(p.sql,p.bindings); }
-                        for (const o of s.orderBy) { q = q.orderByRaw('?? IS NULL ' + (o.nulls === 'first' ? 'DESC' : 'ASC'), [o.attribute]).orderBy(o.attribute,o.direction); }
+                        for (const o of s.orderBy) { q = q.orderByRaw('?? IS NULL ' + (o.nulls === 'first' ? 'DESC' : 'ASC'), [table(path,hashed)+'.'+o.attribute]).orderBy(table(path,hashed)+'.'+o.attribute,o.direction); }
                         if (s.limit !== null) q = q.limit(s.limit);
                         if (s.offset) q = q.offset(s.offset);
                         return {records:(await q).map(row => fromDb(entity,row))};
@@ -355,7 +367,7 @@ export default class Adapter {
                             if (mysql) t.engine('InnoDB');
                             for (const a of entity.attributes) {
                                 let c;
-                                if (a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation) { if (pg) t.integer(a.name).primary(); else if (mysql) t.specificType(a.name, 'int NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
+                                if (a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation) { if (pg) t.bigInteger(a.name).primary(); else if (mysql) t.specificType(a.name, 'bigint unsigned NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
                                 const physical = codec.type({attribute:a,dialect:knex.client.config.client,indexed:codec.indexed(entity,a.name)});
                                 c = t.specificType(a.name,pg && physical==='text' ? 'text COLLATE "C"' : physical);
                                 if (!a.nullable) c.notNullable();

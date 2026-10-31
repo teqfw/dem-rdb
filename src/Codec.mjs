@@ -29,7 +29,8 @@ export default class Codec {
             const n=a.type.name,p=a.type.params ?? {};
             if (n==='boolean') return 'integer';
             if (numeric(a)) {
-                if (n !== 'integer' || p.bits < 32 || p.bits === 32 && !p.unsigned) return 'integer';
+                if (n !== 'integer') return dialect==='pg' ? 'bigint' : dialect==='mysql2' ? 'bigint unsigned' : 'integer';
+                if (p.bits < 32 || p.bits === 32 && !p.unsigned) return 'integer';
                 if (dialect==='sqlite3') return 'text';
                 if (dialect==='pg') return p.bits===64 && p.unsigned ? 'numeric(20,0)' : 'bigint';
                 return p.unsigned ? 'bigint unsigned' : 'bigint';
@@ -54,6 +55,11 @@ export default class Codec {
                 const a=entity.attributes.find(a=>a.name===key), n=a.type.name;
                 if (value===null) return [key,null];
                 const type=this.type({attribute:a,dialect,indexed:this.indexed(entity,key)});
+                if (['identity','ref'].includes(n) && a.type.profile.type==='int') {
+                    const max=dialect==='mysql2' ? 18446744073709551615n : 9223372036854775807n;
+                    if (BigInt(value)>max) throw errors.create({code:'UNSUPPORTED',message:'Identity exceeds native 64-bit storage capacity.'});
+                    return [key,String(value)];
+                }
                 if (numeric(a) && type==='integer') {
                     const number=Number(value);
                     if (!Number.isSafeInteger(number) || dialect!=='sqlite3' && (number < -2147483648 || number > 2147483647)) throw errors.create({code:'UNSUPPORTED',message:'Value exceeds physical integer capacity.'});
