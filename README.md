@@ -18,7 +18,9 @@ const {record} = await users.create({record: {name: 'Ada'}});
 
 The host integrates `provider.get` at its repository-provider composition boundary, and manages connection shutdown. `createSchema` refuses existing tables; it is transactional for SQLite and PostgreSQL. MariaDB DDL has different cleanup behavior described below. It is not a migration or rebuild tool. Foreign keys are enabled on the single SQLite connection.
 
-Initial capabilities: integer identity/ref, bounded integer, boolean, string, text, UUID, enum and date; primary and unique keys, indexes, relations, generated integer identities, and DEM CRUD/List. Unsupported logical types, UUID identity and 64-bit integer declarations are rejected before schema creation. Values outside JavaScript's safe integer range are rejected. SQLite requires a pool maximum of one. PostgreSQL uses the `pg` client, UTF8 encoding, `C` text collation and signed 32-bit physical integers; identifiers exceeding the supported backend limits are rejected. The host installs the database driver. MariaDB 10.11 is supported through `mysql2`; Oracle MySQL has not been verified. The `knex` dependency supplies SQL query construction and dialect access; DEM supplies model and portable validation.
+Core DEM logical value types are supported: integer identity/ref, UUID identity/ref, signed/unsigned ordinary integers through 64 bits, exact decimal, boolean, string, text, UUID, enum, date, datetime, binary, JSON and dense/bit/sparse vectors. UUID identities are generated in JavaScript. Integer identity capacity remains the existing backend-specific baseline; ordinary wide integers use exact string driver results and are not converted through JavaScript Number. The host installs the database driver.
+
+Knex supplies SQL schema/query construction and transactions. DEM supplies logical normalization and the shared software selection evaluator. Extended numeric, structured and datetime entities, and MariaDB long-payload entities, use shared selection evaluation when native execution would change their portable behavior; simple selections continue to use SQL. See the [DEM compatibility matrix](https://github.com/teqfw/dem/blob/main/skills/teqfw-dem/references/compatibility.md) for current cross-backend reach.
 
 Run `npm test` to execute DEM's repository conformance suite against an isolated SQLite database. This is an early implementation: deployment migrations, external transaction composition and broader type and dialect coverage are not implemented.
 
@@ -41,8 +43,37 @@ For PostgreSQL use `knex({client: 'pg', connection, searchPath: ['application_sc
 
 The opt-in PostgreSQL suite uses `TEQFW_DB__PG_HOST`, `TEQFW_DB__PG_USER`, `TEQFW_DB__PG_PASSWORD`, and `TEQFW_DB__PG_DATABASE`, and runs with `npm run test:postgresql`. It creates isolated temporary test schemas and removes them; the supplied database role needs schema creation privileges.
 
-For MariaDB use Knex's `mysql2` client and install `mysql2` in the host. The adapter requires InnoDB with 16 KiB pages, strict SQL mode and enabled foreign-key checks. Text is stored as UTF-8 bytes in `VARBINARY(512)` to preserve exact case, trailing spaces and Unicode ordering; strings exceeding 512 UTF-8 bytes and indexes wider than 3072 bytes reject as `UNSUPPORTED` before writes. Numeric storage uses signed 32-bit integers. The MariaDB client supports generated identities via native `AUTO_INCREMENT`.
+For MariaDB use Knex's `mysql2` client and install `mysql2` in the host. The adapter requires InnoDB with 16 KiB pages, strict SQL mode and enabled foreign-key checks. Unindexed text, structured values and binary payloads use `LONGBLOB`; indexed textual/binary values use `VARBINARY(512)` and remain bounded to 512 bytes per indexed value. This preserves case and trailing spaces without a locale collation. Indexes wider than 3072 bytes reject before schema creation. Ordinary large integers use bigint types; integer identities retain signed int32 capacity. The MariaDB client supports generated identities via native `AUTO_INCREMENT`.
 
 MariaDB DDL commits implicitly, so schema creation cannot be transactional. On failure the adapter attempts to remove only tables and foreign keys created by that attempt; an interrupted process or failed cleanup can leave partial schema requiring operator cleanup. Do not run schema creation concurrently for the same target.
 
 The opt-in MariaDB suite uses `TEQFW_DB__MYSQL_HOST`, `TEQFW_DB__MYSQL_USER`, `TEQFW_DB__MYSQL_PASSWORD`, and `TEQFW_DB__MYSQL_DATABASE`; run `npm run test:mariadb`. It checks that its deterministic test tables do not exist before creating them and removes only its own tables and foreign keys. Use an isolated test database and credentials with table create, alter, and drop rights.
+
+## Exact physical value mapping
+
+SQLite stores ordinary wide integers and decimals as exact text, binary as BLOB,
+and JSON/vectors as canonical serialized text. PostgreSQL uses bigint or
+numeric(20,0) for wide integers, numeric for decimal precision up to 1000, bytea
+for binary, and text fallbacks for larger decimal and structured values. MariaDB
+uses bigint, native decimal within its 65-digit/38-scale limits, and reversible
+binary UTF8 fallbacks beyond them. Datetime remains canonical text/binary rather
+than a JavaScript Date or a lower-precision native timestamp. Vector storage does
+not require pgvector and preserves JavaScript float precision.
+
+For MariaDB wide values configure `supportBigNumbers: true` and
+`bigNumberStrings: true`, and keep `decimalNumbers` disabled. Driver conversions
+that destroy precision are reported as STORAGE rather than silently accepted.
+Non-well-formed UTF16 text and PostgreSQL text containing a zero character are
+currently unsupported, with explicit rejection before writes. Changing physical
+column types requires a new schema or an explicit host migration; this release
+does not modify existing tables automatically.
+
+## Cross-engine comparison
+
+Set `TEQFW_DEM_IDB_ROOT` to a DEM-IDB checkout with its dependencies installed,
+then run `npm run test:compare`. The runner starts its real Chrome harness,
+executes the published all-type workload and compares the full logical transcript
+with SQLite and each configured PostgreSQL/MariaDB test connection. Missing SQL
+connection environments are reported as skipped subtests. The suite refuses to
+modify existing MariaDB comparison tables and uses its own PostgreSQL schema.
+The browser harness and both packages must use the same current DEM version.

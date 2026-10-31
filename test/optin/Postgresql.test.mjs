@@ -3,11 +3,12 @@ import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
 import {register} from '@teqfw/dem/conformance';
+import {schema as valueSchema,map as valueMap,exercise} from '@teqfw/dem/conformance/values';
 import {createHash, randomBytes} from 'node:crypto';
 
 const connection = {host:process.env.TEQFW_DB__PG_HOST,user:process.env.TEQFW_DB__PG_USER,password:process.env.TEQFW_DB__PG_PASSWORD,database:process.env.TEQFW_DB__PG_DATABASE};
 if (Object.values(connection).some(value => !value)) throw new Error('PostgreSQL test connection environment is incomplete.');
-async function open({schema}) {
+async function open({schema,map}) {
     const namespace = 'dem_rdb_test_' + randomBytes(8).toString('hex');
     const admin = knex({client:'pg',connection,pool:{min:0,max:1}});
     await admin.schema.createSchema(namespace);
@@ -17,7 +18,7 @@ async function open({schema}) {
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         const compiler = await c.get('TeqFw_Dem_Compile$');
-        const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
+        const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         const adapter = await c.get('TeqFw_DemRdb_Adapter$');
         const provider = await adapter.open({model,knex:db});
         await provider.createSchema();
@@ -96,4 +97,10 @@ test('long logical paths and key names map to valid physical identifiers', async
         assert.deepEqual(await repo.create({record:{name:'ok'}}),{record:{name:'ok'}});
         await assert.rejects(repo.create({record:{name:'ok'}}),{code:'CONFLICT'});
     } finally { await env.close(); }
+});
+
+
+test('shared all-type value workload uses exact logical observations',async()=>{
+    const env=await open({schema:valueSchema,map:valueMap});
+    try { await exercise({provider:env.provider,assert}); } finally { await env.close(); }
 });

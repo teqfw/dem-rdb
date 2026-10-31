@@ -19,7 +19,8 @@
     "verify": "npm test && npm run typecheck",
     "typecheck": "tsc -p tsconfig.json",
     "test:postgresql": "node --test test/optin/Postgresql.test.mjs",
-    "test:mariadb": "node --test test/optin/Mariadb.test.mjs"
+    "test:mariadb": "node --test test/optin/Mariadb.test.mjs",
+    "test:compare": "node --test test/compare/Values.test.mjs"
   },
   "dependencies": {
     "@teqfw/dem": "^0.2.0",

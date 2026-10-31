@@ -21,6 +21,8 @@ declare global {
     type TeqFw_DemRdb_Adapter__Class = typeof import("./src/Adapter.mjs").default;
     type TeqFw_DemRdb_Api_Configuration = import("./src/Api/Configuration.mjs").default;
     type TeqFw_DemRdb_Api_Configuration__Class = typeof import("./src/Api/Configuration.mjs").default;
+    type TeqFw_DemRdb_Codec = import("./src/Codec.mjs").default;
+    type TeqFw_DemRdb_Codec__Class = typeof import("./src/Codec.mjs").default;
     type TeqFw_DemRdb_Provider = import("./src/Provider.mjs").default;
     type TeqFw_DemRdb_Provider__Class = typeof import("./src/Provider.mjs").default;
 }

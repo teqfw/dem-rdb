@@ -3,13 +3,14 @@ import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
 import {register} from '@teqfw/dem/conformance';
+import {schema as valueSchema,map as valueMap,exercise} from '@teqfw/dem/conformance/values';
 
-async function open({schema}) {
+async function open({schema,map}) {
     const c = new Container();
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
     const compiler = await c.get('TeqFw_Dem_Compile$');
-    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
+    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
     const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
     const adapter = await c.get('TeqFw_DemRdb_Adapter$');
     const provider = await adapter.open({model,knex:db});
@@ -32,7 +33,7 @@ test('unsupported model is rejected before database effects', async () => {
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
     const compiler = await c.get('TeqFw_Dem_Compile$');
-    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:1,'/app/record':{attributes:[{name:'data',type:{name:'json'}}]}}}]});
+    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:1,'/app/record':{attributes:[{name:'data',type:{name:'json'},generation:true}]}}}]});
     const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
     try {
         const adapter = await c.get('TeqFw_DemRdb_Adapter$');
@@ -137,4 +138,10 @@ test('provider rejects missing uniqueness and foreign key constraints', async ()
         await env.db.schema.createTable(childTable, table => { table.increments('id'); table.integer('owner').notNullable(); });
         await assert.rejects(env.provider.get({path:'/app/child'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
+});
+
+
+test('all core DEM values round-trip with exact selection semantics',async()=>{
+    const env=await open({schema:valueSchema,map:valueMap});
+    try { await exercise({provider:env.provider,assert}); } finally { await env.close(); }
 });

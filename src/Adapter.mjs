@@ -9,9 +9,12 @@ export default class Adapter {
      * @param {any} deps.normalize
      * @param {any} deps.selection
      * @param {any} deps.errors
+     * @param {any} deps.codec
+     * @param {any} deps.evaluate
+     * @param {typeof import("node:crypto").randomUUID} deps.randomUUID
      * @param {typeof import("node:crypto").createHash} deps.createHash
      */
-    constructor({normalize, selection, errors, createHash}) {
+    constructor({normalize, selection, errors, createHash, codec, evaluate, randomUUID}) {
         /**
          * @param {any} code
          * @param {string} message
@@ -48,9 +51,7 @@ export default class Adapter {
         const supported = entity => {
             for (const a of entity.attributes) {
                 const n = a.type.name;
-                if (!['identity', 'ref', 'integer', 'boolean', 'string', 'text', 'uuid', 'enum', 'date'].includes(n)) fail('UNSUPPORTED', 'Unsupported logical type: ' + n);
-                if ((n === 'identity' || n === 'ref') && a.type.profile?.type !== 'int') fail('UNSUPPORTED', 'Only integer identity profiles are supported.');
-                if (n === 'integer' && (a.type.params?.bits === 64 || a.type.params?.unsigned && a.type.params?.bits === 32)) fail('UNSUPPORTED', 'Integer capacity exceeds exact SQLite JavaScript support.');
+                if (!['identity','ref','integer','boolean','string','text','uuid','enum','date','datetime','decimal','binary','json','vector'].includes(n)) fail('UNSUPPORTED', 'Unsupported logical type: ' + n);
                 if (a.generation && !(n === 'identity' && entity.primaryKey?.length === 1)) fail('UNSUPPORTED', 'Unsupported generation.');
             }
         };
@@ -67,21 +68,7 @@ export default class Adapter {
          * @param {any} row
          * @returns {any}
          */
-        const fromDb = (entity, row) => {
-            if (!row) return null;
-            const result = {};
-            for (const a of entity.attributes) {
-                let v = row[a.name];
-                if (v !== null && ['identity', 'ref', 'integer'].includes(a.type.name)) {
-                    if (!Number.isSafeInteger(v)) fail('STORAGE', 'Stored integer exceeds supported capacity.');
-                    v = String(v);
-                }
-                if (v !== null && a.type.name === 'boolean') v = Boolean(v);
-                if (Buffer.isBuffer(v)) { const decoded = v.toString('utf8'); if (!Buffer.from(decoded, 'utf8').equals(v)) fail('STORAGE', 'Stored text is not valid UTF-8.'); v = decoded; }
-                result[a.name] = v;
-            }
-            return normalize.record({entity, record: result, mode: 'complete'});
-        };
+        const fromDb = (entity,row) => codec.decode(entity,row);
         /**
          * @param {any} entity
          * @param {any} record
@@ -89,16 +76,7 @@ export default class Adapter {
          * @param {boolean} mysql
          * @returns {any}
          */
-        const toDb = (entity, record, pg, mysql) => Object.fromEntries(Object.entries(record).map(([key, value]) => {
-            const a = entity.attributes.find(x => x.name === key);
-            if (value !== null && ['integer', 'identity', 'ref'].includes(a.type.name)) {
-                const n = Number(value);
-                if (!Number.isSafeInteger(n) || ((pg || mysql) && (n < -2147483648 || n > 2147483647))) fail('UNSUPPORTED', 'Value exceeds supported integer capacity.');
-                return [key, n];
-            }
-            if (mysql && typeof value === 'string' && Buffer.byteLength(value, 'utf8') > 512) fail('UNSUPPORTED', 'Text exceeds MariaDB storage capacity.');
-            return [key, typeof value === 'boolean' ? Number(value) : value];
-        }));
+        const toDb = (entity,record,pg,mysql) => codec.encode({entity,record,dialect:pg ? 'pg' : mysql ? 'mysql2' : 'sqlite3'});
         /**
          * @param {object} deps
          * @param {any} deps.knex
@@ -110,19 +88,23 @@ export default class Adapter {
             const name = table(path, true);
             const [tables] = await knex.raw('SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?', [name]);
             if (tables.length !== 1 || tables[0].engine !== 'InnoDB') fail('UNSUPPORTED','MariaDB table must use InnoDB.');
-            const [columns] = await knex.raw('SELECT COLUMN_NAME AS name, DATA_TYPE AS type, COLUMN_TYPE AS column_type, EXTRA AS extra, CHARACTER_MAXIMUM_LENGTH AS width, IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?', [name]);
+            const [columns] = await knex.raw('SELECT COLUMN_NAME AS name, DATA_TYPE AS type, COLUMN_TYPE AS column_type, EXTRA AS extra, CHARACTER_MAXIMUM_LENGTH AS width, NUMERIC_PRECISION AS numeric_precision, NUMERIC_SCALE AS numeric_scale, IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?', [name]);
             if (columns.length !== entity.attributes.length) fail('UNSUPPORTED','Database table does not match the effective model.');
             for (const attribute of entity.attributes) {
                 const column = columns.find(c=>c.name===attribute.name);
-                const numeric = ['identity','ref','integer','boolean'].includes(attribute.type.name);
-                if (!column || column.type !== (numeric ? 'int' : 'varbinary') || (!numeric && Number(column.width) !== 512) || (numeric && /unsigned/i.test(column.column_type)) || (column.extra.includes('auto_increment') !== Boolean(attribute.generation)) || (column.nullable === 'YES') !== attribute.nullable)
+                const expected = codec.type({attribute, dialect:'mysql2', indexed:codec.indexed(entity,attribute.name)});
+                const type = expected.startsWith('decimal(') ? 'decimal' : expected.split(/[ (]/)[0];
+                const decimal = /^decimal\((\d+),(\d+)\)$/.exec(expected);
+                if (decimal && (Number(column?.numeric_precision)!==Number(decimal[1]) || Number(column?.numeric_scale)!==Number(decimal[2]))) fail('UNSUPPORTED','Database decimal precision does not match the model.');
+                const generated = attribute.type.name === 'identity' && attribute.type.profile.type === 'int' && attribute.generation;
+                if (!column || column.type !== (type==='integer' ? 'int' : type) || (expected==='varbinary(512)' && Number(column.width)!==512) || (/unsigned/i.test(column.column_type) !== expected.includes('unsigned')) || (column.extra.includes('auto_increment') !== Boolean(generated)) || (column.nullable === 'YES') !== attribute.nullable)
                     fail('UNSUPPORTED','Database column does not match the effective model.');
             }
             const [indexes] = await knex.raw('SELECT INDEX_NAME AS name, NON_UNIQUE AS non_unique, COLUMN_NAME AS column_name, SEQ_IN_INDEX AS position, SUB_PART AS prefix_length FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? ORDER BY INDEX_NAME, SEQ_IN_INDEX', [name]);
             const primary = indexes.filter(i=>i.name==='PRIMARY').map(i=>i.column_name);
             if (JSON.stringify(primary) !== JSON.stringify(entity.primaryKey ?? [])) fail('UNSUPPORTED','Database primary key does not match the model.');
             const actualUnique = [];
-            for (const indexName of new Set(indexes.filter(i=>!i.non_unique && i.name!=='PRIMARY').map(i=>i.name))) {
+            for (const indexName of new Set(indexes.filter(i=>Number(i.non_unique)===0 && i.name!=='PRIMARY').map(i=>i.name))) {
                 const members = indexes.filter(i=>i.name===indexName);
                 if (members.some(i=>i.prefix_length !== null || !i.column_name)) fail('UNSUPPORTED','Partial or expression unique indexes are unsupported.');
                 actualUnique.push(JSON.stringify(members.map(i=>i.column_name)));
@@ -164,7 +146,7 @@ export default class Adapter {
             if (columns.length !== entity.attributes.length || JSON.stringify(primary) !== JSON.stringify(entity.primaryKey ?? [])) fail('UNSUPPORTED','Database table does not match the effective model.');
             for (const attribute of entity.attributes) {
                 const column = columns.find(c=>c.name===attribute.name);
-                const type = ['identity','ref','integer','boolean'].includes(attribute.type.name) ? 'integer' : 'text';
+                const type = codec.type({attribute,dialect:'pg',indexed:codec.indexed(entity,attribute.name)});
                 if (!column || column.type !== type || Boolean(column.required) === Boolean(attribute.nullable) || (type === 'text' && column.collation !== 'C')) fail('UNSUPPORTED','Database column does not match the effective model.');
             }
             const extraIndexes = (await knex.raw(`SELECT i.indexrelid FROM pg_index i
@@ -203,7 +185,7 @@ export default class Adapter {
             for (const entity of Object.values(model.entities)) {
                 supported(entity);
                 if (mysql) for (const key of [entity.primaryKey, ...Object.values(entity.uniqueKeys), ...Object.values(entity.indexes).map(index => index.attributes)]) {
-                    if (key && key.reduce((sum, name) => { const a = entity.attributes.find(item => item.name === name); return sum + (['identity','ref','integer','boolean'].includes(a.type.name) ? 4 : 512); }, 0) > 3072) fail('UNSUPPORTED', 'MariaDB index exceeds supported width.');
+                    if (key && key.reduce((sum, name) => { const a = entity.attributes.find(item => item.name === name); return sum + (codec.type({attribute:a,dialect:'mysql2',indexed:true}) === 'integer' ? 4 : codec.numeric(a) ? 8 : 512); }, 0) > 3072) fail('UNSUPPORTED', 'MariaDB index exceeds supported width.');
                 }
             }
             try {
@@ -234,7 +216,7 @@ export default class Adapter {
                         fail('UNSUPPORTED', 'Database table does not match the effective model.');
                     for (const attribute of entity.attributes) {
                         const column = columns.find(value => value.name === attribute.name);
-                        const type = ['identity','ref','integer','boolean'].includes(attribute.type.name) ? 'INTEGER' : 'TEXT';
+                        const type = codec.type({attribute,dialect:'sqlite3',indexed:codec.indexed(entity,attribute.name)}).toUpperCase();
                         if (!column || column.type.toUpperCase() !== type || (attribute.nullable ? Boolean(column.required || column.pk) : !column.required && !column.pk))
                             fail('UNSUPPORTED', 'Database column does not match the effective model.');
                     }
@@ -281,11 +263,13 @@ export default class Adapter {
                 return {
                     create: async params => wrap(async () => {
                         shape(params, ['record']);
-                        const value = toDb(entity, normalize.record({entity, record: params.record, mode:'create'}), pg, mysql);
+                        const logical = normalize.record({entity,record:params.record,mode:'create'});
+                        for (const a of entity.attributes) if (a.type.name==='identity' && a.type.profile.type==='uuid' && a.generation && !Object.hasOwn(logical,a.name)) logical[a.name]=randomUUID();
+                        const value = toDb(entity,logical,pg,mysql);
                         return knex.transaction(async trx => {
                             if (!hashed) await ensureForeignKeys(trx);
                             if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
-                            const generated = entity.attributes.find(a => a.type.name === 'identity' && a.generation);
+                            const generated = entity.attributes.find(a => a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation);
                             if (pg && generated) {
                                 await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [table(path, hashed)]);
                                 if (!Object.hasOwn(value, generated.name)) {
@@ -326,6 +310,8 @@ export default class Adapter {
                     list: async params => wrap(async () => {
                         shape(params, ['selection']);
                         const s = selection.create({entity, selection:params.selection});
+                        if (entity.attributes.some(a=>mysql && codec.type({attribute:a,dialect:'mysql2',indexed:codec.indexed(entity,a.name)})==='longblob' || ['decimal','datetime','binary','json','vector'].includes(a.type.name) || a.type.name==='integer' && (a.type.params.bits===64 || a.type.params.unsigned && a.type.params.bits===32)))
+                            return evaluate.exec({entity,records:(await query().select('*')).map(row=>fromDb(entity,row)),selection:s});
                         /**
                          * @param {any} node
                          * @returns {any}
@@ -369,12 +355,12 @@ export default class Adapter {
                             if (mysql) t.engine('InnoDB');
                             for (const a of entity.attributes) {
                                 let c;
-                                if (a.type.name === 'identity' && a.generation) { if (pg) t.integer(a.name).primary(); else if (mysql) t.specificType(a.name, 'int NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
-                                if (['identity','ref','integer','boolean'].includes(a.type.name)) c = t.integer(a.name);
-                                else c = pg ? t.specificType(a.name, 'text COLLATE "C"') : mysql ? t.specificType(a.name, 'varbinary(512)') : t.text(a.name);
+                                if (a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation) { if (pg) t.integer(a.name).primary(); else if (mysql) t.specificType(a.name, 'int NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
+                                const physical = codec.type({attribute:a,dialect:knex.client.config.client,indexed:codec.indexed(entity,a.name)});
+                                c = t.specificType(a.name,pg && physical==='text' ? 'text COLLATE "C"' : physical);
                                 if (!a.nullable) c.notNullable();
                             }
-                            if (entity.primaryKey && !entity.attributes.some(a => a.type.name === 'identity' && a.generation)) t.primary(entity.primaryKey);
+                            if (entity.primaryKey && !entity.attributes.some(a => a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation)) t.primary(entity.primaryKey);
                             for (const [name, columns] of Object.entries(entity.uniqueKeys)) t.unique(columns, hashed ? `${table(path, hashed)}_u_${createHash('sha256').update(name).digest('hex').slice(0, 16)}` : `${table(path, hashed)}_u_${name}`);
                             for (const [name, columns] of Object.entries(entity.indexes)) t.index(columns.attributes, hashed ? `${table(path, hashed)}_i_${createHash('sha256').update(name).digest('hex').slice(0, 16)}` : `${table(path, hashed)}_i_${name}`);
                             if (!hashed) for (const [index, relation] of Object.values(entity.relations).entries()) t.foreign(relation.attributes, `${table(path, hashed)}_f_${index}`).references(relation.target.attributes).inTable(table(relation.target.path, hashed));
@@ -405,4 +391,4 @@ export default class Adapter {
         };
     }
 }
-export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash'})});
+export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID',codec:'TeqFw_DemRdb_Codec$',evaluate:'TeqFw_Dem_Repository_Select$'})});

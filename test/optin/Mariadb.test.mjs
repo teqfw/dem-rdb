@@ -3,19 +3,20 @@ import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
 import {register} from '@teqfw/dem/conformance';
+import {schema as valueSchema,map as valueMap,exercise} from '@teqfw/dem/conformance/values';
 import {createHash,randomBytes} from 'node:crypto';
 
 const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE};
 if (Object.values(connection).some(value => !value)) throw new Error('MariaDB test connection environment is incomplete.');
 const table = path => 'dem_' + createHash('sha256').update(path).digest('hex').slice(0,32);
-async function open({schema}) {
-    const db = knex({client:'mysql2',connection,pool:{min:0,max:4}});
+async function open({schema,map}) {
+    const db = knex({client:'mysql2',connection:{...connection,supportBigNumbers:true,bigNumberStrings:true},pool:{min:0,max:4}});
     try {
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         const compiler = await c.get('TeqFw_Dem_Compile$');
-        const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
+        const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         for (const path of Object.keys(model.entities)) if (await db.schema.hasTable(table(path))) throw new Error('A test table already exists; refusing to modify it.');
         const adapter = await c.get('TeqFw_DemRdb_Adapter$');
         const provider = await adapter.open({model,knex:db});
@@ -40,12 +41,14 @@ test('binary text preserves trailing spaces, case and Unicode order', async () =
     } finally { await env.close(); }
 });
 
-test('MariaDB rejects oversized text before insertion', async () => {
+test('MariaDB retains long unindexed text without the old 512 byte limit', async () => {
     const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
-        await assert.rejects(repo.create({record:{name:'x'.repeat(513)}}),{code:'UNSUPPORTED'});
-        assert.deepEqual(await repo.list({selection:{}}),{records:[]});
+        const text='🌍'.repeat(2000);
+        await repo.create({record:{name:text}});
+        assert.equal((await repo.list({selection:{}})).records[0].name,text);
+        assert.equal((await repo.list({selection:{}})).records.length,1);
     } finally { await env.close(); }
 });
 
@@ -103,7 +106,7 @@ test('a failed schema creation removes tables created by the attempt', async () 
     const suffix = randomBytes(8).toString('hex');
     const first = `/cleanup_${suffix}/a`, second = `/cleanup_${suffix}/b`;
     const schema = {$format:1,[first]:{attributes:[{name:'name',type:{name:'text'}}]},[second]:{attributes:[{name:'name',type:{name:'text'}}]}};
-    const db = knex({client:'mysql2',connection,pool:{min:0,max:1}});
+    const db = knex({client:'mysql2',connection:{...connection,supportBigNumbers:true,bigNumberStrings:true},pool:{min:0,max:1}});
     try {
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
         const c = new Container();
@@ -116,4 +119,10 @@ test('a failed schema creation removes tables created by the attempt', async () 
         await assert.rejects(provider.createSchema(),{code:'STORAGE'});
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
     } finally { await db.destroy(); }
+});
+
+
+test('shared all-type value workload uses exact logical observations',async()=>{
+    const env=await open({schema:valueSchema,map:valueMap});
+    try { await exercise({provider:env.provider,assert}); } finally { await env.close(); }
 });
