@@ -2,7 +2,7 @@
 
 Relational persistence for `@teqfw/dem`. The host compiles plugin declarations with DEM, provides a Knex SQLite, PostgreSQL or MariaDB connection, creates schema explicitly and selects the resulting provider for the DEM repository contract. Runtime components use TeqFW DI.
 
-## Initial relational adapter
+## Native relational projection
 
 Register `TeqFw_DemRdb_` to this package's `src/` and `TeqFw_Dem_` to DEM's `src/`. Obtain `TeqFw_DemRdb_Adapter$`, then:
 
@@ -22,7 +22,7 @@ Core DEM logical value types are supported: integer identity/ref, UUID identity/
 
 Knex supplies SQL schema/query construction and transactions. DEM supplies logical normalization and the shared software selection evaluator. Extended numeric, structured and datetime entities, and MariaDB long-payload entities, use shared selection evaluation when native execution would change their portable behavior; simple selections continue to use SQL. See the [DEM compatibility matrix](https://github.com/teqfw/dem/blob/main/skills/teqfw-dem/references/compatibility.md) for current cross-backend reach.
 
-Run `npm test` to execute DEM's repository conformance suite against an isolated SQLite database. This is an early implementation: deployment migrations, external transaction composition and broader type and dialect coverage are not implemented.
+Run `npm test` to execute DEM's repository conformance suite against an isolated SQLite database. The native projection retains the original physical layout; the portable projection below adds broader logical key support and structural evolution.
 
 For DI substitution, the host maps `TeqFw_Dem_Api_RepositoryProvider$` to `TeqFw_DemRdb_Provider$` with a DI preprocessor, and maps `TeqFw_DemRdb_Api_Configuration$` to a host component whose asynchronous `get()` returns `{model, knex}`. The provider opens lazily on first use and caches its configuration. The host initializes the schema separately through `Adapter.open` before using repositories. The default configuration raises `UNSUPPORTED` until the host supplies one.
 
@@ -73,8 +73,8 @@ remain qualitative and do not promise a sequence or non-reuse after deletion.
 PostgreSQL/MariaDB schemas created by older int32 mappings need explicit migration
 or a fresh schema; no implicit column alteration is performed.
 
-Non-well-formed UTF16 text and PostgreSQL text containing a zero character are
-currently unsupported, with explicit rejection before writes. Changing physical
+DEM rejects lone UTF16 surrogates as invalid logical input. Native PostgreSQL text
+containing NUL is unsupported; the portable projection preserves valid scalars including NUL. Changing physical
 column types requires a new schema or an explicit host migration; this release
 does not modify existing tables automatically.
 
@@ -87,3 +87,64 @@ with SQLite and each configured PostgreSQL/MariaDB test connection. Missing SQL
 connection environments are reported as skipped subtests. The suite refuses to
 modify existing MariaDB comparison tables and uses its own PostgreSQL schema.
 The browser harness and both packages must use the same current DEM version.
+
+## Portable relational projection
+
+For the broadest common IDB/RDB behavior, explicitly select this separate layout:
+
+```js
+const backend = await adapter.open({
+    model: compilation.model, knex: db, projection: 'portable',
+    name: 'application', enforceRelations: true,
+});
+await backend.createSchema();
+const {results} = await backend.execute({operations: [
+    {path: '/app/user', method: 'create', params: {record: {name: 'Ada'}}},
+    {path: '/app/user', method: 'list', params: {selection: {}}},
+]});
+const {schemas} = await backend.getSchemaHistory();
+await backend.close(); // Invalidates this backend; the host still owns db.destroy().
+```
+
+Portable mode retains an entity table and a column for each attribute. Hashed
+physical identifiers avoid logical name length limits. Private UUID row keys and
+software uniqueness/relation checks avoid native logical index-width bounds. Exact
+persistent counters and textual identity/ref values support identities beyond native
+64-bit ranges. Textual scalars use reversible JSON encoding, including NUL; ordinary
+values retain native numeric/blob storage where lossless. A field-presence inventory
+distinguishes absent historical fields from explicit null. Name selects an isolated
+physical family; it must remain stable when reopening the same data.
+
+Operations lock scope metadata and evaluate a logical snapshot with shared DEM
+semantics. This conservatively serializes operations and can consume substantial
+memory; native index throughput is not promised. Engine quotas and physical object
+limits still apply. SQLite requires a single connection. MariaDB portable tables
+require InnoDB and strict SQL mode.
+
+createSchema is idempotent for an unchanged model. Changes record complete versioned
+model snapshots, add columns/tables and retain removed physical data. Defaults and
+nullable additions project on read. Newly declared constraints do not audit historical
+data at schema publication. Stale providers reject and must be reopened. Physical
+type changes requiring conversion reject; the host owns value migrations and backup.
+SQLite/PostgreSQL publish DDL and history transactionally. MariaDB schema updates
+require host quiescence: DDL commits implicitly, cleanup removes only additions from
+the failed attempt where possible, and interruption/failed cleanup can need manual
+repair. Do not run concurrent schema updates or promise online DDL atomicity.
+
+The default projection remains native. Native and portable layouts are distinct;
+switching requires explicit host data migration. Native createSchema still only
+initializes empty storage and native getSchemaHistory rejects UNSUPPORTED.
+
+Both projections support execute with nonempty ordered CRUD/list commands in one
+data transaction; any failure rolls back. Results use existing DEM envelopes and
+become observable after commit. Dependent keys must be explicit. Callback transaction
+APIs and schema commands are excluded. Map both RepositoryProvider and the optional
+`TeqFw_Dem_Api_RepositoryBatch$` token to `TeqFw_DemRdb_Provider$` in host DI. Its
+configuration can return projection, name and enforceRelations with model and knex.
+Portable relations are checked by default; enforceRelations:false selects descriptive
+relations. Native mode requires checked relations.
+
+Run test:portable against configured engines for strict conformance, values, atomic
+commands, long/structured keys, structural history and failed schema publication.
+The comparison suite covers native values/atomic commands and portable values,
+atomic commands, extended representation and evolution against real browser IDB.

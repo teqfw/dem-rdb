@@ -9,3 +9,10 @@ async function check(): Promise<RdbBackend> {
     return backend;
 }
 void check;
+
+async function batchTypes(backend: RdbBackend) {
+    await backend.execute({operations:[{path:'/app/item',method:'list',params:{selection:{}}}]});
+    // @ts-expect-error create requires record, not a selection
+    await backend.execute({operations:[{path:'/app/item',method:'create',params:{selection:{}}}]});
+}
+void batchTypes;

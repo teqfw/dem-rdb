@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
 import {register} from '@teqfw/dem/conformance';
-import {schema as valueSchema,map as valueMap,exercise} from '@teqfw/dem/conformance/values';
+import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 import {createHash, randomBytes} from 'node:crypto';
 
 const connection = {host:process.env.TEQFW_DB__PG_HOST,user:process.env.TEQFW_DB__PG_USER,password:process.env.TEQFW_DB__PG_PASSWORD,database:process.env.TEQFW_DB__PG_DATABASE};
@@ -115,4 +115,10 @@ test('PostgreSQL generated identity exhaustion rolls back without precision loss
         await assert.rejects(repo.create({record:{}}),{code:'STORAGE'});
         assert.deepEqual(await repo.list({selection:{}}),{records:[record]});
     } finally {await env.close();}
+});
+
+
+test('shared atomic batch workload preserves transaction behavior',async()=>{
+    const env=await open({schema:atomicSchema});
+    try {await exerciseAtomic({provider:env.provider,assert});} finally {await env.close();}
 });

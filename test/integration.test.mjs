@@ -3,7 +3,7 @@ import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
 import {register} from '@teqfw/dem/conformance';
-import {schema as valueSchema,map as valueMap,exercise} from '@teqfw/dem/conformance/values';
+import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 
 async function open({schema,map}) {
     const c = new Container();
@@ -65,6 +65,8 @@ test('host DI selects the relational provider through DEM contract', async () =>
         c.enableTestMode();
         c.register('TeqFw_DemRdb_Api_Configuration$', {get:async()=>({model:env.model,knex:env.db})});
         const provider = await c.get('TeqFw_Dem_Api_RepositoryProvider$');
+        const atomic=await c.get('TeqFw_Dem_Api_RepositoryBatch$');assert.equal(atomic,provider);
+        assert.equal((await atomic.execute({operations:[{path:'/app/item',method:'create',params:{record:{name:'batch DI'}}}]})).results[0].record.name,'batch DI');
         const repo = await provider.get({path:'/app/item'});
         assert.deepEqual(await repo.create({record:{name:'Ada'}}),{record:{name:'Ada'}});
     } finally { await env.close(); }
@@ -158,4 +160,10 @@ test('SQLite native identity boundary is exact and exhaustion leaves contents un
         await assert.rejects(repo.create({record:{}}),{code:'STORAGE'});
         assert.deepEqual(await repo.list({selection:{}}),{records:[record]});
     } finally {await env.close();}
+});
+
+
+test('atomic batches commit all commands or leave the original state intact',async()=>{
+    const env=await open({schema:atomicSchema});
+    try {await exerciseAtomic({provider:env.provider,assert});} finally {await env.close();}
 });

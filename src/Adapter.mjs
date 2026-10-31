@@ -11,10 +11,12 @@ export default class Adapter {
      * @param {any} deps.errors
      * @param {any} deps.codec
      * @param {any} deps.evaluate
+     * @param {any} deps.batch
+     * @param {any} deps.portable
      * @param {typeof import("node:crypto").randomUUID} deps.randomUUID
      * @param {typeof import("node:crypto").createHash} deps.createHash
      */
-    constructor({normalize, selection, errors, createHash, codec, evaluate, randomUUID}) {
+    constructor({normalize, selection, errors, createHash, codec, evaluate, randomUUID, batch, portable}) {
         /**
          * @param {any} code
          * @param {string} message
@@ -68,7 +70,7 @@ export default class Adapter {
          * @param {any} row
          * @returns {any}
          */
-        const fromDb = (entity,row) => codec.decode(entity,row);
+        const fromDb = (entity,row) => codec.decode(entity,row && !Object.hasOwn(row,'__proto__') && Object.hasOwn(row,'$dem_proto') ? Object.fromEntries([...Object.entries(row),['__proto__',row.$dem_proto]]) : row);
         /**
          * @param {any} entity
          * @param {any} record
@@ -83,8 +85,12 @@ export default class Adapter {
          * @returns {Array<any>}
          */
         const projection = function (entity,connection) {
-            return entity.attributes.map(a=>codec.numeric(a) || a.type.name==='decimal' && !['text','longblob','varbinary(512)'].includes(codec.type({attribute:a,dialect:connection.client.config.client,indexed:codec.indexed(entity,a.name)}))
-                ? connection.raw('CAST(?? AS '+(connection.client.config.client==='mysql2' ? 'CHAR' : 'TEXT')+') AS ??',[a.name,a.name]) : a.name);
+            return entity.attributes.map(a=>{
+                const alias=a.name==='__proto__' ? '$dem_proto' : a.name;
+                if (codec.numeric(a) || a.type.name==='decimal' && !['text','longblob','varbinary(512)'].includes(codec.type({attribute:a,dialect:connection.client.config.client,indexed:codec.indexed(entity,a.name)})))
+                    return connection.raw('CAST(?? AS '+(connection.client.config.client==='mysql2' ? 'CHAR' : 'TEXT')+') AS ??',[a.name,alias]);
+                return alias!==a.name ? connection.raw('?? AS ??',[a.name,alias]) : a.name;
+            });
         };
         /**
          * @param {object} deps
@@ -182,10 +188,18 @@ export default class Adapter {
          * @param {object} deps
          * @param {any} deps.model
          * @param {any} deps.knex
+         * @param {string} [deps.projection]
+         * @param {string} [deps.name]
+         * @param {boolean} [deps.enforceRelations]
          * @returns {Promise<any>}
          */
-        this.open = async function ({model, knex}) {
+        this.open = async function ({model, knex, projection:strategy='native',name='default',enforceRelations=true}) {
+            if (!['native','portable'].includes(strategy)) fail('INVALID_INPUT','Unknown relational projection.');
+            if (strategy==='portable') return portable.open({model,knex,name,enforceRelations});
+            if (enforceRelations!==true) fail('UNSUPPORTED','Descriptive relations require the portable projection.');
             if (!model?.entities || typeof knex !== 'function' || !['sqlite3','pg','mysql2'].includes(knex.client.config.client)) fail('UNSUPPORTED', 'A compiled model and supported Knex connection are required.');
+            const adapter=this;
+            let closed=false;
             const pg = knex.client.config.client === 'pg';
             const mysql = knex.client.config.client === 'mysql2';
             const hashed = pg || mysql;
@@ -210,6 +224,7 @@ export default class Adapter {
              * @returns {Promise<any>}
              */
             const get = async function (params) {
+                if (closed) fail('STORAGE','Provider is closed.');
                 shape(params, ['path']);
                 const {path} = params;
                 if (typeof path !== 'string' || !/^\/(?:[a-z0-9_]+)(?:\/[a-z0-9_]+)*$/.test(path)) fail('INVALID_INPUT', 'Expected a canonical entity path.');
@@ -268,12 +283,12 @@ export default class Adapter {
                  * @param {any} fn
                  * @returns {Promise<any>}
                  */
-                const wrap = async fn => { try { return await fn(); } catch (e) { mapError(e); } };
+                const wrap = async fn => { try { if (closed) fail('STORAGE','Provider is closed.'); return await fn(); } catch (e) { mapError(e); } };
                 return {
                     create: async params => wrap(async () => {
                         shape(params, ['record']);
                         const logical = normalize.record({entity,record:params.record,mode:'create'});
-                        for (const a of entity.attributes) if (a.type.name==='identity' && a.type.profile.type==='uuid' && a.generation && !Object.hasOwn(logical,a.name)) logical[a.name]=randomUUID();
+                        for (const a of entity.attributes) if (a.type.name==='identity' && a.type.profile.type==='uuid' && a.generation && !Object.hasOwn(logical,a.name)) Object.defineProperty(logical,a.name,{value:randomUUID(),enumerable:true,writable:true,configurable:true});
                         const value = toDb(entity,logical,pg,mysql);
                         return knex.transaction(async trx => {
                             if (!hashed) await ensureForeignKeys(trx);
@@ -285,14 +300,14 @@ export default class Adapter {
                                     const highest = await trx(table(path, hashed)).select(trx.raw('CAST(MAX(??) AS TEXT) AS value',[generated.name])).first();
                                     const next = BigInt(highest.value ?? '0') + 1n;
                                     if (next > 9223372036854775807n) fail('STORAGE', 'Identity capacity exhausted.');
-                                    value[generated.name] = next.toString();
+                                    Object.defineProperty(value,generated.name,{value:next.toString(),enumerable:true,writable:true,configurable:true});
                                 }
                             }
                             if (mysql) {
                                 await trx(table(path, hashed)).insert(value);
                                 if (generated && !Object.hasOwn(value, generated.name)) {
                                     const [rows]=await trx.raw('SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id');
-                                    value[generated.name]=rows[0].id;
+                                    Object.defineProperty(value,generated.name,{value:rows[0].id,enumerable:true,writable:true,configurable:true});
                                 }
                                 return {record: fromDb(entity, value)};
                             }
@@ -352,6 +367,7 @@ export default class Adapter {
              * @returns {Promise<void>}
              */
             const createSchema = async function () {
+                if (closed) fail('STORAGE','Provider is closed.');
                 const created = [];
                 const foreign = [];
                 /**
@@ -399,8 +415,22 @@ export default class Adapter {
                     mapError(error);
                 }
             };
-            return {get, createSchema};
+            /** @param {any} params @returns {Promise<any>} */
+            const execute=async function (params) {
+                if (closed) fail('STORAGE','Provider is closed.');
+                shape(params,['operations']);
+                const commands=batch.validate({model,operations:params.operations});
+                try {
+                    return await knex.transaction(async trx=>{
+                        const backend=await adapter.open({model,knex:trx});
+                        const results=[];
+                        for (const command of commands) results.push(await (await backend.get({path:command.path}))[command.method](command.params));
+                        return {results};
+                    });
+                } catch (error) {mapError(error);}
+            };
+            return {get, createSchema, execute, getSchemaHistory:async function () {fail('UNSUPPORTED','Native projection has no schema history.');}, close:async function () {closed=true;}};
         };
     }
 }
-export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID',codec:'TeqFw_DemRdb_Codec$',evaluate:'TeqFw_Dem_Repository_Select$'})});
+export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID',codec:'TeqFw_DemRdb_Codec$',evaluate:'TeqFw_Dem_Repository_Select$',batch:'TeqFw_Dem_Repository_Batch$',portable:'TeqFw_DemRdb_Portable$'})});
