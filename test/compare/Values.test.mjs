@@ -1,18 +1,13 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-import {mkdtemp,readFile,rm} from 'node:fs/promises';
-import {tmpdir} from 'node:os';
-import {join,resolve} from 'node:path';
+import {resolve} from 'node:path';
+import {browserObservation} from './Browser.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import Container from '@teqfw/di';
 import knex from 'knex';
 import {schema,map,exercise,atomicSchema,exerciseAtomic,extendedSchema,exerciseExtended,exerciseEvolution} from '@teqfw/dem/conformance/values';
 import {harness,enabled,connection} from '../portable/Harness.mjs';
 
-const run=promisify(execFile),idbRoot=process.env.TEQFW_DEM_IDB_ROOT;
-if(!idbRoot)throw new Error('TEQFW_DEM_IDB_ROOT must identify the dem-idb checkout with its browser test harness.');
 const table=(path,hashed)=>hashed ? 'dem_'+createHash('sha256').update(path).digest('hex').slice(0,32) : 'dem_'+Buffer.from(path).toString('hex');
 async function native(client,document,host,runWorkload,expected) {
     const namespace='dem_compare_'+randomBytes(6).toString('hex');
@@ -41,32 +36,27 @@ async function native(client,document,host,runWorkload,expected) {
 }
 
 test('real backend transcripts match browser IndexedDB across projections and lifecycle', {timeout:120000}, async t=>{
-    const temp=await mkdtemp(join(tmpdir(),'dem-compare-'));
-    try {
-        const output=join(temp,'idb.json'),childEnv={...process.env,DEM_COMPARE_OUTPUT:output};delete childEnv.NODE_TEST_CONTEXT;
-        await run(process.execPath,['--test',resolve(idbRoot,'test/browser/Runtime.test.mjs')],{cwd:idbRoot,env:childEnv,timeout:90000,maxBuffer:8*1024*1024});
-        const browser=JSON.parse(await readFile(output,'utf8'));
-        for(const key of ['valueTranscript','atomicTranscript','extendedTranscript','evolutionTranscript'])assert.ok(browser[key]);
-        console.log('IDB baseline:',browser.browser);
-        for(const client of ['sqlite3','pg','mysql2']) {
-            if(!enabled(client)){await t.test(client,{skip:'Test connection is not configured'},()=>{});continue;}
-            for(const [label,document,host,runWorkload,expected] of [
-                ['values',schema,map,exercise,browser.valueTranscript],
-                ['atomic',atomicSchema,undefined,exerciseAtomic,browser.atomicTranscript],
-                ['extended',extendedSchema,undefined,exerciseExtended,browser.extendedTranscript],
-            ]) {
-                if(label!=='extended')await t.test(client+' native '+label,()=>native(client,document,host,runWorkload,expected));
-                await t.test(client+' portable '+label,async()=>{
-                    const h=await harness(client);
-                    try {const env=await h.open({schema:document,map:host});await env.provider.createSchema();assert.deepEqual(await runWorkload({provider:env.provider,assert}),expected);}
-                    finally {await h.close();}
-                });
-            }
-            await t.test(client+' portable evolution',async()=>{
+    const browser=await browserObservation();
+    for(const key of ['valueTranscript','atomicTranscript','extendedTranscript','evolutionTranscript'])assert.ok(browser[key]);
+    console.log('IDB baseline:',browser.browser);
+    for(const client of ['sqlite3','pg','mysql2']) {
+        if(!enabled(client)){await t.test(client,{skip:'Test connection is not configured'},()=>{});continue;}
+        for(const [label,document,host,runWorkload,expected] of [
+            ['values',schema,map,exercise,browser.valueTranscript],
+            ['atomic',atomicSchema,undefined,exerciseAtomic,browser.atomicTranscript],
+            ['extended',extendedSchema,undefined,exerciseExtended,browser.extendedTranscript],
+        ]) {
+            if(label!=='extended')await t.test(client+' native '+label,()=>native(client,document,host,runWorkload,expected));
+            await t.test(client+' portable '+label,async()=>{
                 const h=await harness(client);
-                try {assert.deepEqual(await exerciseEvolution({assert,open:async document=>(await h.open({schema:document})).provider}),browser.evolutionTranscript);}
+                try {const env=await h.open({schema:document,map:host});await env.provider.createSchema();assert.deepEqual(await runWorkload({provider:env.provider,assert}),expected);}
                 finally {await h.close();}
             });
         }
-    } finally {await rm(temp,{recursive:true,force:true});}
+        await t.test(client+' portable evolution',async()=>{
+            const h=await harness(client);
+            try {assert.deepEqual(await exerciseEvolution({assert,open:async document=>(await h.open({schema:document})).provider}),browser.evolutionTranscript);}
+            finally {await h.close();}
+        });
+    }
 });

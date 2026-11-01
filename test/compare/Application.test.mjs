@@ -1,0 +1,36 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {run} from './application/Node.mjs';
+import {browserObservation} from './Browser.mjs';
+
+test('one unchanged application runs through DEM DI on SQLite and real browser IndexedDB', {timeout: 120000}, async () => {
+    const node = await run();
+    const browser = await browserObservation({scenario: 'application'});
+    const actual = browser.applicationObservation;
+    assert.ok(actual, 'Browser must return the application observation');
+    assert.match(node.applicationHash, /^[a-f0-9]{64}$/);
+    assert.equal(actual.applicationHash, node.applicationHash, 'Both roots load the exact same application bytes');
+    assert.deepEqual(actual.model, node.model);
+    assert.equal(actual.fingerprint, node.fingerprint);
+    assert.deepEqual(actual.transcript, node.transcript, 'Compare all results without identifier/value rewriting');
+    const t = node.transcript;
+    assert.equal(t.inputUnchanged, true);
+    assert.equal(t.changesUnchanged, true);
+    assert.deepEqual(t.created, t.read);
+    assert.deepEqual(t.read, t.afterDetachedMutation);
+    assert.equal(t.created.record.priority, '20');
+    assert.equal(t.created.record.state, 'open');
+    assert.equal(t.created.record.note, null);
+    assert.deepEqual(t.created.record.metadata, {tags: ['docs']});
+    assert.equal(t.updated.record.priority, '12');
+    assert.equal(t.updated.record.note, 'scheduled');
+    assert.deepEqual(t.page.records, [t.updated.record]);
+    assert.deepEqual(t.missing, {read: {record: null}, update: {record: null}, delete: {deleted: false}});
+    assert.deepEqual(t.deleted, {deleted: true});
+    assert.deepEqual(t.deletedAgain, {deleted: false});
+    assert.deepEqual(t.readDeleted, {record: null});
+    assert.deepEqual(t.remaining.records.map(row => row.title), ['Archive task', 'Review patch', 'Fix issue']);
+    console.log('Shared application SHA-256:', node.applicationHash);
+    console.log('Effective model fingerprint:', node.fingerprint);
+    console.log('Browser:', browser.browser);
+});

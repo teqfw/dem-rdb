@@ -148,3 +148,44 @@ Run test:portable against configured engines for strict conformance, values, ato
 commands, long/structured keys, structural history and failed schema publication.
 The comparison suite covers native values/atomic commands and portable values,
 atomic commands, extended representation and evolution against real browser IDB.
+
+## One application module on SQLite and IndexedDB
+
+DEM publishes `conformance/application/Workflow.mjs` and its Schema module. Workflow
+is an ordinary DI component whose only dependencies are the DEM RepositoryProvider
+and Selection factory. It triages tasks through create/read/update/delete/list,
+filtering, sorting and pagination. Its logical records include integer normalization,
+an enum default, nullable note and nested JSON. Application logic has no runtime
+branches, physical storage references or adapter imports.
+
+- Node Composition Root: [test/compare/application/Node.mjs](test/compare/application/Node.mjs).
+- Browser Composition Root: DEM-IDB `test/browser/application/Browser.mjs`.
+- Acceptance test: [test/compare/Application.test.mjs](test/compare/Application.test.mjs).
+
+Install dependencies with the same current DEM checkout/archive in both adapters,
+including the new conformance/application exports. Install SQLite's native binding
+and make google-chrome available (or set CHROME_PATH). No PostgreSQL/MariaDB
+configuration is needed for this scenario. From the DEM-RDB checkout:
+
+```sh
+node test/compare/application/Node.mjs
+TEQFW_DEM_IDB_ROOT=../dem-idb npm run test:application
+```
+
+The first command prints the SQLite observation. The second reuses the existing
+DEM-IDB HTTP/Chrome harness in application-only mode and compares both observations.
+For browser-only execution, run `DEM_BROWSER_SCENARIO=application npm run test:browser`
+in DEM-IDB; set DEM_COMPARE_OUTPUT to retain its JSON observation envelope.
+
+Each root registers DEM, its adapter, Demo_ and Host_ namespaces before resolution.
+Its preprocessor selects the concrete provider and a host-owned configuration
+component; the root initializes that component before resolving Workflow. No DI test
+mode or repository fake is used. The Node root owns a temporary SQLite file; the
+browser root owns an isolated database. Both clean up their resources in finally.
+
+The acceptance test compares the exact application-source SHA-256, complete effective
+models, fingerprints and transcripts. It also asserts expected results, missing-row
+envelopes, detached records and unchanged input data. Generated integer ids match
+in these empty stores, so there is no normalization that could hide differences.
+This proves the covered workflow on SQLite/Chrome IDB; it does not add synchronization,
+new repository methods, migration behavior or guarantees for other browsers.
