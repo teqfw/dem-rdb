@@ -2,6 +2,10 @@
 
 Relational persistence for `@teqfw/dem`. The host compiles plugin declarations with DEM, provides a Knex SQLite, PostgreSQL or MariaDB connection, creates schema explicitly and selects the resulting provider for the DEM repository contract. Runtime components use TeqFW DI.
 
+DEM schema descriptors use Format 2. Format 1 schema descriptors are rejected by
+design, with no legacy compatibility mode; this is an intentional breaking
+contract. Host maps are separate and continue to use Format 1.
+
 ## Native relational projection
 
 Register `TeqFw_DemRdb_` to this package's `src/` and `TeqFw_Dem_` to DEM's `src/`. Obtain `TeqFw_DemRdb_Adapter$`, then:
