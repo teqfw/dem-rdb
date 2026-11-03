@@ -33,7 +33,7 @@ async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberS
 register({test,assert,open});
 
 test('binary text preserves trailing spaces, case and Unicode order', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         for (const name of ['a','a ','A','🌍']) await repo.create({record:{name}});
@@ -42,7 +42,7 @@ test('binary text preserves trailing spaces, case and Unicode order', async () =
 });
 
 test('MariaDB retains long unindexed text without the old 512 byte limit', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         const text='🌍'.repeat(2000);
@@ -53,7 +53,7 @@ test('MariaDB retains long unindexed text without the old 512 byte limit', async
 });
 
 test('explicit and concurrent generated MariaDB identities remain unique', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         await repo.create({record:{id:'1',name:'explicit'}});
@@ -64,7 +64,7 @@ test('explicit and concurrent generated MariaDB identities remain unique', async
 });
 
 test('invalid stored UTF-8 is not silently changed', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         await env.db(table('/app/item')).insert({name:Buffer.from([0xff])});
@@ -73,9 +73,9 @@ test('invalid stored UTF-8 is not silently changed', async () => {
 });
 
 test('cyclic MariaDB relationships can be created and enforced', async () => {
-    const schema = {$format:1,
-        '/app/a':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'b',type:{name:'ref'},nullable:true}],relations:{b:{attributes:['b'],target:{path:'/app/b',attributes:['id']}}}},
-        '/app/b':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'a',type:{name:'ref'},nullable:true}],relations:{a:{attributes:['a'],target:{path:'/app/a',attributes:['id']}}}},
+    const schema = {$format:2,$namespace:'/app/',
+        a:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'b',type:{name:'ref'},nullable:true}],relations:{b:{attributes:['b'],target:{path:'/app/b',attributes:['id']}}}},
+        b:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'a',type:{name:'ref'},nullable:true}],relations:{a:{attributes:['a'],target:{path:'/app/a',attributes:['id']}}}},
     };
     const env = await open({schema});
     try {
@@ -86,7 +86,7 @@ test('cyclic MariaDB relationships can be created and enforced', async () => {
 });
 
 test('entity containing only a generated identity accepts an empty record', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         const result = await repo.create({record:{}});
@@ -95,7 +95,7 @@ test('entity containing only a generated identity accepts an empty record', asyn
 });
 
 test('provider rejects an unexpected uniqueness constraint', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         await env.db.schema.alterTable(table('/app/item'), t=>t.unique(['name'],'unexpected_unique'));
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
@@ -104,8 +104,8 @@ test('provider rejects an unexpected uniqueness constraint', async () => {
 
 test('a failed schema creation removes tables created by the attempt', async () => {
     const suffix = randomBytes(8).toString('hex');
-    const first = `/cleanup_${suffix}/a`, second = `/cleanup_${suffix}/b`;
-    const schema = {$format:1,[first]:{attributes:[{name:'name',type:{name:'text'}}]},[second]:{attributes:[{name:'name',type:{name:'text'}}]}};
+    const first = `/cleanup${suffix}/a`, second = `/cleanup${suffix}/b`;
+    const schema = {$format:2,$namespace:`/cleanup${suffix}/`,a:{attributes:[{name:'name',type:{name:'text'}}]},b:{attributes:[{name:'name',type:{name:'text'}}]}};
     const db = knex({client:'mysql2',connection:{...connection,supportBigNumbers:true,bigNumberStrings:true},pool:{min:0,max:1}});
     try {
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
@@ -134,7 +134,7 @@ test('SQL casts preserve values even when the driver is configured for numeric c
 });
 
 test('MariaDB unsigned native identity boundary is exact and exhausts atomically',async()=>{
-    const env=await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    const env=await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
     try {
         const repo=await env.provider.get({path:'/app/item'});
         const record={id:'18446744073709551615'};

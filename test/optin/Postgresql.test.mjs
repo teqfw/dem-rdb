@@ -28,7 +28,7 @@ async function open({schema,map}) {
 register({test,assert,open});
 
 test('generated identity avoids an explicitly supplied identity', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         await repo.create({record:{id:'1',name:'first'}});
@@ -38,7 +38,7 @@ test('generated identity avoids an explicitly supplied identity', async () => {
 });
 
 test('out-of-range identity is rejected without an insert', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         await assert.rejects(repo.create({record:{id:'9223372036854775808',name:'bad'}}),{code:'UNSUPPORTED'});
@@ -47,7 +47,7 @@ test('out-of-range identity is rejected without an insert', async () => {
 });
 
 test('parallel generated identities are unique', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         const results = await Promise.all(Array.from({length:12}, (_,i) => repo.create({record:{name:String(i)}})));
@@ -56,7 +56,7 @@ test('parallel generated identities are unique', async () => {
 });
 
 test('provider detects missing unique constraints', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}}}});
     try {
         const physical = 'dem_' + createHash('sha256').update('/app/item').digest('hex').slice(0,32);
         await env.db.schema.alterTable(physical, t => t.dropUnique(['name'], `${physical}_u_${createHash('sha256').update('name').digest('hex').slice(0,16)}`));
@@ -65,9 +65,9 @@ test('provider detects missing unique constraints', async () => {
 });
 
 test('cyclic relationships are created after both tables', async () => {
-    const schema = {$format:1,
-        '/app/a':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'b',type:{name:'ref'},nullable:true}],relations:{b:{attributes:['b'],target:{path:'/app/b',attributes:['id']}}}},
-        '/app/b':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'a',type:{name:'ref'},nullable:true}],relations:{a:{attributes:['a'],target:{path:'/app/a',attributes:['id']}}}},
+    const schema = {$format:2,$namespace:'/app/',
+        a:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'b',type:{name:'ref'},nullable:true}],relations:{b:{attributes:['b'],target:{path:'/app/b',attributes:['id']}}}},
+        b:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'a',type:{name:'ref'},nullable:true}],relations:{a:{attributes:['a'],target:{path:'/app/a',attributes:['id']}}}},
     };
     const env = await open({schema});
     try {
@@ -80,7 +80,7 @@ test('cyclic relationships are created after both tables', async () => {
 });
 
 test('provider rejects unmodelled unique indexes', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const physical = 'dem_' + createHash('sha256').update('/app/item').digest('hex').slice(0,32);
         await env.db.schema.alterTable(physical, table => table.unique(['name'], {indexName:'extra_unique',useConstraint:false}));
@@ -89,8 +89,8 @@ test('provider rejects unmodelled unique indexes', async () => {
 });
 
 test('long logical paths and key names map to valid physical identifiers', async () => {
-    const path = '/vendor/feature/customer_identity_record';
-    const schema = {$format:1,[path]:{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{a_very_long_unique_key_name_for_customer:['name']}}};
+    const path = '/vendor/feature/customer/identity/record';
+    const schema = {$format:2,$namespace:'/vendor/feature/','customer/identity/record':{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{a_very_long_unique_key_name_for_customer:['name']}}};
     const env = await open({schema});
     try {
         const repo = await env.provider.get({path});
@@ -107,7 +107,7 @@ test('shared all-type value workload uses exact logical observations',async()=>{
 
 
 test('PostgreSQL generated identity exhaustion rolls back without precision loss',async()=>{
-    const env=await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    const env=await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
     try {
         const repo=await env.provider.get({path:'/app/item'});
         const record={id:'9223372036854775807'};

@@ -20,7 +20,7 @@ async function open({schema,map}) {
 register({test,assert,open});
 
 test('schema creation is explicit and rejects an existing target', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         await assert.rejects(env.provider.createSchema(), {name:'DemRepositoryError',code:'CONFLICT'});
         const repo = await env.provider.get({path:'/app/item'});
@@ -33,7 +33,7 @@ test('unsupported model is rejected before database effects', async () => {
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
     const compiler = await c.get('TeqFw_Dem_Compile$');
-    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:1,'/app/record':{attributes:[{name:'data',type:{name:'json'},generation:true}]}}}]});
+    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:2,$namespace:'/app/',record:{attributes:[{name:'data',type:{name:'json'},generation:true}]}}}]});
     const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
     try {
         const adapter = await c.get('TeqFw_DemRdb_Adapter$');
@@ -43,7 +43,7 @@ test('unsupported model is rejected before database effects', async () => {
 });
 
 test('repository provider obtains the model and connection from its host configuration', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const Provider = (await import('../src/Provider.mjs')).default;
         let calls = 0;
@@ -56,7 +56,7 @@ test('repository provider obtains the model and connection from its host configu
 });
 
 test('host DI selects the relational provider through DEM contract', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const c = new Container({preprocessors:['Test_Preprocessor$']});
         c.addNamespaceRoot('Test_',new URL('./fixture',import.meta.url).pathname,'.mjs');
@@ -72,16 +72,16 @@ test('host DI selects the relational provider through DEM contract', async () =>
     } finally { await env.close(); }
 });
 
-test('canonical numeric and underscore paths resolve', async () => {
-    const env = await open({schema:{$format:1,'/_app/1_item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+test('canonical nested Format 2 paths resolve', async () => {
+    const env = await open({schema:{$format:2,$namespace:'/app/catalog/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
-        const repo = await env.provider.get({path:'/_app/1_item'});
+        const repo = await env.provider.get({path:'/app/catalog/item'});
         assert.deepEqual(await repo.create({record:{name:'ok'}}), {record:{name:'ok'}});
     } finally { await env.close(); }
 });
 
 test('writes fail before effects when foreign keys have been disabled', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const repo = await env.provider.get({path:'/app/item'});
         await env.db.raw('PRAGMA foreign_keys = OFF');
@@ -94,7 +94,7 @@ test('writes fail before effects when foreign keys have been disabled', async ()
 });
 
 test('declared DEM indexes project to ordered SQLite index columns', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'a',type:{name:'text'}},{name:'b',type:{name:'integer'}}],indexes:{lookup:{attributes:['b','a']}}}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'a',type:{name:'text'}},{name:'b',type:{name:'integer'}}],indexes:{lookup:{attributes:['b','a']}}}}});
     try {
         const index = await env.db('sqlite_master').select('name').where({type:'index'}).first();
         assert.ok(index);
@@ -104,7 +104,7 @@ test('declared DEM indexes project to ordered SQLite index columns', async () =>
 });
 
 test('unique key and index may share a logical name', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'a',type:{name:'text'}},{name:'b',type:{name:'text'}}],uniqueKeys:{lookup:['a']},indexes:{lookup:{attributes:['b']}}}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'a',type:{name:'text'}},{name:'b',type:{name:'text'}}],uniqueKeys:{lookup:['a']},indexes:{lookup:{attributes:['b']}}}}});
     try {
         const indexes = await env.db('sqlite_master').select('name').where({type:'index'});
         assert.equal(indexes.length,2);
@@ -115,7 +115,7 @@ test('unique key and index may share a logical name', async () => {
 });
 
 test('provider rejects a missing or incompatible physical table', async () => {
-    const env = await open({schema:{$format:1,'/app/item':{attributes:[{name:'name',type:{name:'text'}}]}}});
+    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const physical = 'dem_' + Buffer.from('/app/item').toString('hex');
         await env.db.schema.dropTable(physical);
@@ -126,9 +126,9 @@ test('provider rejects a missing or incompatible physical table', async () => {
 });
 
 test('provider rejects missing uniqueness and foreign key constraints', async () => {
-    const schema = {$format:1,
-        '/app/parent':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}},
-        '/app/child':{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'owner',type:{name:'ref'}}],relations:{owner:{attributes:['owner'],target:{path:'/app/parent',attributes:['id']}}}},
+    const schema = {$format:2,$namespace:'/app/',
+        parent:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}},
+        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'owner',type:{name:'ref'}}],relations:{owner:{attributes:['owner'],target:{path:'/app/parent',attributes:['id']}}}},
     };
     const env = await open({schema});
     try {
@@ -150,7 +150,7 @@ test('all core DEM values round-trip with exact selection semantics',async()=>{
 
 
 test('SQLite native identity boundary is exact and exhaustion leaves contents unchanged',async()=>{
-    const env=await open({schema:{$format:1,'/app/item':{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
+    const env=await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
     try {
         const repo=await env.provider.get({path:'/app/item'});
         const record={id:'9223372036854775807'};
