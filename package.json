@@ -26,7 +26,7 @@
     "test:application": "node --test test/compare/Application.test.mjs"
   },
   "dependencies": {
-    "@teqfw/dem": "^0.3.0",
+    "@teqfw/dem": "github:teqfw/dem",
     "knex": "^3.1.0"
   },
   "peerDependencies": {

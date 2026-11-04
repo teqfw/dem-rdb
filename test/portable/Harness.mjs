@@ -23,6 +23,7 @@ export async function harness(client) {
             const [rows]=await db.raw('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LEFT(TABLE_NAME,?)=?',[prefix.length,prefix]);
             if(rows.length)throw new Error('Portable test scope already exists; refusing to modify it.');owned=true;
         }
+        (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler=await c.get('TeqFw_Dem_Compile$'),adapter=await c.get('TeqFw_DemRdb_Adapter$'),selection=await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$');
         const close=async()=>{
             try {

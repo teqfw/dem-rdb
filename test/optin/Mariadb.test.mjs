@@ -15,6 +15,7 @@ async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberS
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+        (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         for (const path of Object.keys(model.entities)) if (await db.schema.hasTable(table(path))) throw new Error('A test table already exists; refusing to modify it.');
@@ -112,6 +113,7 @@ test('a failed schema creation removes tables created by the attempt', async () 
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+        (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
         const provider = await (await c.get('TeqFw_DemRdb_Adapter$')).open({model,knex:db});

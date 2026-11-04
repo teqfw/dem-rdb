@@ -9,6 +9,7 @@ async function open({schema,map}) {
     const c = new Container();
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
+    (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
     const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
@@ -32,6 +33,7 @@ test('unsupported model is rejected before database effects', async () => {
     const c = new Container();
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
+    (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:2,$namespace:'/app/',record:{attributes:[{name:'data',type:{name:'json'},generation:true}]}}}]});
     const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});

@@ -20,6 +20,7 @@ async function native(client,document,host,runWorkload,expected) {
         const c=new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_DemRdb_',process.env.TEQFW_DEM_RDB_ROOT ? resolve(process.env.TEQFW_DEM_RDB_ROOT,'src') : new URL('../../src',import.meta.url).pathname,'.mjs');
+        (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler=await c.get('TeqFw_Dem_Compile$');
         const {model}=await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document}],...(host ? {map:{packageName:'test',filename:'map.json',document:host}} : {})});
         const adapter=await c.get('TeqFw_DemRdb_Adapter$'),provider=await adapter.open({model,knex:db});

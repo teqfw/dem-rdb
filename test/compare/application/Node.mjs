@@ -40,6 +40,7 @@ export async function run() {
                 {prefix: 'Host_', target: fileURLToPath(new URL('./', import.meta.url)), defaultExt: '.mjs'},
             ], preprocessors: ['Host_Node__Preprocessor$'],
         });
+        (await container.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await container.get('TeqFw_Dem_Compile$');
         const {model, fingerprint} = await compiler.exec({schemas: [source]});
         const configuration = await container.get('Host_Node__Configuration$');
