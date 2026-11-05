@@ -191,11 +191,32 @@ export default class Adapter {
          * @param {string} [deps.projection]
          * @param {string} [deps.name]
          * @param {boolean} [deps.enforceRelations]
+         * @param {any} [deps.runtime]
          * @returns {Promise<any>}
          */
-        this.open = async function ({model, knex, projection:strategy='native',name='default',enforceRelations=true}) {
+        this.open = async function ({model, knex, projection:strategy='native',name='default',enforceRelations=true,runtime}) {
             if (!['native','portable'].includes(strategy)) fail('INVALID_INPUT','Unknown relational projection.');
-            if (strategy==='portable') return portable.open({model,knex,name,enforceRelations});
+            if (!model?.entities) fail('INVALID_INPUT','A compiled DEM model is required.');
+            /** @param {any} value @returns {string} */
+            const canonical=value=>JSON.stringify(value,(_key,item)=>item && typeof item==='object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])) : item);
+            const hasExtensions=Object.values(model.entities).some(entity=>entity.attributes.some(attribute=>attribute.type.name.includes('.')));
+            if (runtime && canonical(runtime.model)!==canonical(model)) fail('INVALID_INPUT','The DEM Runtime is bound to a different Effective DEM.');
+            if (runtime && (!runtime.normalize || typeof runtime.normalize.value!=='function' || typeof runtime.normalize.record!=='function' || typeof runtime.normalize.key!=='function'
+                || typeof runtime.selection?.create!=='function' || typeof runtime.select?.exec!=='function'
+                || typeof runtime.batch?.validate!=='function' || typeof runtime.batch?.plan!=='function')) fail('UNSUPPORTED','The DEM Runtime is missing required repository operations.');
+            if (hasExtensions && !runtime) fail('UNSUPPORTED','A model-bound DEM Runtime is required for extension types.');
+            for (const entity of Object.values(model.entities)) for (const attribute of entity.attributes) {
+                if (attribute.type.name==='idb.CryptoKey') fail('UNSUPPORTED','idb.CryptoKey has no faithful SQL persistence representation.');
+                if (attribute.type.name.includes('.')) fail('UNSUPPORTED','Unsupported relational extension type: '+attribute.type.name);
+            }
+            const norm=runtime?.normalize ?? normalize;
+            const selectionOps=runtime?.selection ?? selection;
+            const selectOps=runtime?.select ?? evaluate;
+            const batchOps=runtime?.batch ?? {
+                validate:({operations})=>batch.validate({model,operations}),
+                plan:params=>batch.plan({model,...params,normalize:norm,selection:selectionOps,select:selectOps}),
+            };
+            if (strategy==='portable') return portable.open({model,knex,name,enforceRelations,...(runtime ? {runtime} : {})});
             if (enforceRelations!==true) fail('UNSUPPORTED','Descriptive relations require the portable projection.');
             if (!model?.entities || typeof knex !== 'function' || !['sqlite3','pg','mysql2'].includes(knex.client.config.client)) fail('UNSUPPORTED', 'A compiled model and supported Knex connection are required.');
             const adapter=this;
@@ -274,7 +295,7 @@ export default class Adapter {
                  * @param {any} input
                  * @returns {any}
                  */
-                const key = input => toDb(entity, normalize.key({entity, key: input}).values, pg, mysql);
+                const key = input => toDb(entity, norm.key({entity, key: input}).values, pg, mysql);
                 /**
                  * @returns {any}
                  */
@@ -287,7 +308,7 @@ export default class Adapter {
                 return {
                     create: async params => wrap(async () => {
                         shape(params, ['record']);
-                        const logical = normalize.record({entity,record:params.record,mode:'create'});
+                        const logical = norm.record({entity,record:params.record,mode:'create'});
                         for (const a of entity.attributes) if (a.type.name==='identity' && a.type.profile.type==='uuid' && a.generation && !Object.hasOwn(logical,a.name)) Object.defineProperty(logical,a.name,{value:randomUUID(),enumerable:true,writable:true,configurable:true});
                         const value = toDb(entity,logical,pg,mysql);
                         return knex.transaction(async trx => {
@@ -318,7 +339,7 @@ export default class Adapter {
                     read: async params => wrap(async () => { shape(params, ['key']); return {record: fromDb(entity, await query().where(key(params.key)).first())}; }),
                     update: async params => wrap(async () => {
                         shape(params, ['key', 'changes']);
-                        const values = key(params.key), changes = toDb(entity, normalize.record({entity, record:params.changes, mode:'update'}), pg, mysql);
+                        const values = key(params.key), changes = toDb(entity, norm.record({entity, record:params.changes, mode:'update'}), pg, mysql);
                         return knex.transaction(async trx => {
                             if (!hashed) await ensureForeignKeys(trx);
                             if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
@@ -336,9 +357,9 @@ export default class Adapter {
                             if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); } return {deleted: (await trx(table(path, hashed)).where(values).delete()) > 0}; }); }),
                     list: async params => wrap(async () => {
                         shape(params, ['selection']);
-                        const s = selection.create({entity, selection:params.selection});
+                        const s = selectionOps.create({entity, selection:params.selection});
                         if (entity.attributes.some(a=>mysql && codec.type({attribute:a,dialect:'mysql2',indexed:codec.indexed(entity,a.name)})==='longblob' || ['decimal','datetime','binary','json','vector'].includes(a.type.name) || a.type.name==='integer' && (a.type.params.bits===64 || a.type.params.unsigned && a.type.params.bits===32)))
-                            return evaluate.exec({entity,records:(await query()).map(row=>fromDb(entity,row)),selection:s});
+                            return selectOps.exec({entity,records:(await query()).map(row=>fromDb(entity,row)),selection:s});
                         /**
                          * @param {any} node
                          * @returns {any}
@@ -419,10 +440,10 @@ export default class Adapter {
             const execute=async function (params) {
                 if (closed) fail('STORAGE','Provider is closed.');
                 shape(params,['operations']);
-                const commands=batch.validate({model,operations:params.operations});
+                const commands=batchOps.validate({operations:params.operations});
                 try {
                     return await knex.transaction(async trx=>{
-                        const backend=await adapter.open({model,knex:trx});
+                        const backend=await adapter.open({model,knex:trx,...(runtime ? {runtime} : {})});
                         const results=[];
                         for (const command of commands) results.push(await (await backend.get({path:command.path}))[command.method](command.params));
                         return {results};

@@ -32,11 +32,13 @@ export default class Portable {
          * @param {any} deps.knex
          * @param {string} [deps.name]
          * @param {boolean} [deps.enforceRelations]
+         * @param {any} deps.runtime
          * @returns {Promise<any>}
          */
-        this.open=async function ({model,knex,name='default',enforceRelations=true}) {
+        this.open=async function ({model,knex,name='default',enforceRelations=true,runtime}) {
             const dialect=knex?.client?.config?.client;
             if (!model?.entities || typeof knex!=='function' || !['sqlite3','pg','mysql2'].includes(dialect) || typeof name!=='string' || !name || typeof enforceRelations!=='boolean') fail('INVALID_INPUT','A model, supported Knex connection and storage name are required.');
+            const norm=runtime?.normalize ?? normalize,batchExec=runtime?.batch;
             if (dialect==='sqlite3' && knex.client.config.pool?.max!==1) fail('UNSUPPORTED','SQLite requires a single connection pool.');
             const snapshot=JSON.parse(JSON.stringify(model)),identity=canonical(snapshot),paths=Object.keys(snapshot.entities);
             /** @param {string} value @returns {string} */
@@ -112,7 +114,7 @@ export default class Portable {
                     const partial={...entity,attributes:present};
                     const stored=Object.fromEntries(present.map(a=>[a.name,row[column(a.name)]]));
                     const record=codec.decode(partial,stored,true);
-                    return normalize.record({entity,record:normalize.record({entity,record,mode:'create'}),mode:'complete'});
+                    return norm.record({entity,record:norm.record({entity,record,mode:'create'}),mode:'complete'});
                 } catch (error) {throw errors.create({code:'STORAGE',message:'Stored values require explicit migration to the selected model.'});}
             };
             /** @param {string} path @param {any} record @returns {any} */
@@ -123,7 +125,7 @@ export default class Portable {
             /** @param {any} params @returns {Promise<any>} */
             const execute=async function (params) {
                 live();shape(params,['operations']);
-                const commands=batch.validate({model:snapshot,operations:params.operations}),write=commands.some(c=>['create','update','delete'].includes(c.method));
+                const commands=batchExec ? batchExec.validate({operations:params.operations}) : batch.validate({model:snapshot,operations:params.operations}),write=commands.some(c=>['create','update','delete'].includes(c.method));
                 try {
                     return await knex.transaction(async trx=>{
                         const state=await current(trx,true),sequences=parsed(state.sequences),rows=Object.create(null),before=Object.create(null);
@@ -131,7 +133,7 @@ export default class Portable {
                             rows[path]=(await trx(table(path)).select(projection(trx,path))).map(row=>({key:row._dem_row,record:logical(path,row)}));
                             before[path]=new Map(rows[path].map(row=>[row.key,row.record]));
                         }
-                        const result=batch.plan({model:snapshot,operations:commands,rows,enforceRelations,
+                        const plan={operations:commands,rows,enforceRelations,
                             generate:({path,attribute,rows})=>{
                                 if (attribute.type.profile.type==='uuid') return randomUUID();
                                 let value=BigInt(sequences[path] ?? '0');
@@ -142,7 +144,8 @@ export default class Portable {
                                 const a=entity.attributes.find(a=>a.type.name==='identity' && a.type.profile.type==='int');
                                 if (a && BigInt(record[a.name])>BigInt(sequences[path] ?? '0')) sequences[path]=record[a.name];
                             },
-                        });
+                        };
+                        const result=batchExec ? batchExec.plan(plan) : batch.plan({model:snapshot,...plan});
                         if (write) {
                             for (const path of paths) {
                                 const keys=new Set(rows[path].filter(row=>row.key!==undefined).map(row=>row.key));

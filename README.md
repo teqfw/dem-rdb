@@ -28,7 +28,7 @@ Knex supplies SQL schema/query construction and transactions. DEM supplies logic
 
 Run `npm test` to execute DEM's repository conformance suite against an isolated SQLite database. The native projection retains the original physical layout; the portable projection below adds broader logical key support and structural evolution.
 
-For DI substitution, the host maps `TeqFw_Dem_Api_RepositoryProvider$` to `TeqFw_DemRdb_Provider$` with a DI preprocessor, and maps `TeqFw_DemRdb_Api_Configuration$` to a host component whose asynchronous `get()` returns `{model, knex}`. The provider opens lazily on first use and caches its configuration. The host initializes the schema separately through `Adapter.open` before using repositories. The default configuration raises `UNSUPPORTED` until the host supplies one.
+For DI substitution, the host maps `TeqFw_Dem_Api_RepositoryProvider$` to `TeqFw_DemRdb_Provider$` with a DI preprocessor, and maps `TeqFw_DemRdb_Api_Configuration$` to a host component whose asynchronous `get()` returns `{model, knex, projection: 'portable'}`. The provider opens lazily on first use and caches its configuration. The host initializes the schema separately through `Adapter.open` before using repositories. The default configuration raises `UNSUPPORTED` until the host supplies one.
 
 A version-matched consumer skill is included at `skills/teqfw-dem-rdb/`. Hosts may mount it into their agent skill discovery directory.
 
@@ -100,6 +100,7 @@ For the broadest common IDB/RDB behavior, explicitly select this separate layout
 const backend = await adapter.open({
     model: compilation.model, knex: db, projection: 'portable',
     name: 'application', enforceRelations: true,
+    // runtime: hostRuntime, // optional for Core-only models
 });
 await backend.createSchema();
 const {results} = await backend.execute({operations: [
@@ -139,12 +140,19 @@ The default projection remains native. Native and portable layouts are distinct;
 switching requires explicit host data migration. Native createSchema still only
 initializes empty storage and native getSchemaHistory rejects UNSUPPORTED.
 
+Portable is the primary Core persistence path. Core-only models work without an
+explicit Runtime; a supplied Runtime must be bound to the same Effective DEM and
+is used consistently for normalization, Selection, Select and Batch. Models with
+extension types require a bound Runtime, then fail fast unless SQL can preserve
+their declared semantics. `idb.CryptoKey` is unsupported by SQL persistence.
+
 Both projections support execute with nonempty ordered CRUD/list commands in one
 data transaction; any failure rolls back. Results use existing DEM envelopes and
 become observable after commit. Dependent keys must be explicit. Callback transaction
 APIs and schema commands are excluded. Map both RepositoryProvider and the optional
 `TeqFw_Dem_Api_RepositoryBatch$` token to `TeqFw_DemRdb_Provider$` in host DI. Its
-configuration can return projection, name and enforceRelations with model and knex.
+configuration can return projection, name, enforceRelations and an optional bound
+Runtime with model and knex.
 Portable relations are checked by default; enforceRelations:false selects descriptive
 relations. Native mode requires checked relations.
 

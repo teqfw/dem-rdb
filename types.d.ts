@@ -1,12 +1,22 @@
 import type {Knex} from 'knex';
 import type {DemModel, DemRepositoryProvider, DemBatchOperation, DemBatchResult} from '@teqfw/dem';
 
+export interface RdbRuntime {
+    model: DemModel;
+    normalize: {value: (...args: any[]) => any; record: (...args: any[]) => any; key: (...args: any[]) => any};
+    selection: {create: (...args: any[]) => any};
+    select: {exec: (...args: any[]) => any};
+    batch: {validate: (...args: any[]) => any; plan: (...args: any[]) => any};
+}
+
 export interface RdbConfiguration {
     model: DemModel;
     knex: Knex;
     projection?: 'native' | 'portable';
     name?: string;
     enforceRelations?: boolean;
+    /** DEM Runtime binding for model-scoped Core or extension operations. */
+    runtime?: RdbRuntime;
 }
 export interface RdbConfigurationProvider {
     get(): Promise<RdbConfiguration>;
