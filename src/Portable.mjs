@@ -185,6 +185,7 @@ export default class Portable {
                         if (!['id','scope','version','layout','model','sequences'].every(name=>info.some(c=>c.name===name))) fail('UNSUPPORTED','Unknown metadata layout.');
                         previous=await connection(meta).where({id:'current'}).first();
                         if (!previous || Number(previous.layout)!==1 || parsed(previous.scope)!==name) fail('UNSUPPORTED','Unknown metadata revision.');
+                        if (boundVersion!==undefined && boundVersion!==Number(previous.version)) {closed=true;fail('STORAGE','Provider was invalidated by a schema update.');}
                     } else {
                         for (const path of paths) if (await connection.schema.hasTable(table(path))) fail('CONFLICT','Unowned target table already exists.');
                         await connection.schema.createTable(meta,t=>{if(dialect==='mysql2')t.engine('InnoDB');t.string('id',16).primary();t.specificType('scope',bytes).notNullable();t.integer('version').notNullable();t.integer('layout').notNullable();t.specificType('model',bytes).notNullable();t.specificType('sequences',bytes).notNullable();});createdTables.push(meta);

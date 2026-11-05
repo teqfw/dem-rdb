@@ -127,3 +127,27 @@ test('portable schema publication is idempotent, records complete snapshots and 
         assert.deepEqual((await (await reopened.get({path:'/evolution/item'})).list({selection:{}})).records,[{name:'retained',category:'general'}]);
     } finally {await h.close();}
 });
+
+test('portable stale schema publisher cannot replace the current model',async()=>{
+    const h=await harness('sqlite3');
+    try {
+        const oldSchema={$format:2,$namespace:'/stale/',item:{attributes:[{name:'name',type:{name:'text'}}]}};
+        const newSchema={$format:2,$namespace:'/stale/',item:{attributes:[{name:'name',type:{name:'text'}},{name:'category',type:{name:'text'},default:'general'}]}};
+        const oldModel=await h.compile({schema:oldSchema}),newModel=await h.compile({schema:newSchema});
+        const oldProvider=await h.attach({model:oldModel,name:'stale_publisher'});
+        assert.deepEqual(await oldProvider.createSchema(),{version:1});
+        const oldRepository=await oldProvider.get({path:'/stale/item'});
+        await oldRepository.create({record:{name:'retained'}});
+
+        const currentProvider=await h.attach({model:newModel,name:'stale_publisher'});
+        assert.deepEqual(await currentProvider.createSchema(),{version:2});
+        await assert.rejects(oldProvider.createSchema(),{code:'STORAGE'});
+
+        const history=await currentProvider.getSchemaHistory();
+        assert.deepEqual(history.schemas,[{version:1,model:oldModel},{version:2,model:newModel}]);
+        const currentRepository=await currentProvider.get({path:'/stale/item'});
+        assert.deepEqual((await currentRepository.list({selection:{}})).records,[{name:'retained',category:'general'}]);
+        assert.deepEqual(await currentProvider.createSchema(),{version:2});
+        assert.deepEqual((await currentProvider.getSchemaHistory()).schemas,history.schemas);
+    } finally {await h.close();}
+});
