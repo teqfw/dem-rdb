@@ -16,14 +16,15 @@
     "skills/"
   ],
   "scripts": {
-    "test": "teqfw-esm-validator src --profile base && find test/unit test/integration.test.mjs test/portable/Runtime.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
+    "test": "npm run check:esm && find test/unit test/integration.test.mjs test/portable/Runtime.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
     "verify": "npm test && npm run typecheck",
     "typecheck": "tsc -p tsconfig.json",
     "test:postgresql": "node --test test/optin/Postgresql.test.mjs",
     "test:mariadb": "node --test test/optin/Mariadb.test.mjs",
     "test:compare": "node --test test/compare/Values.test.mjs",
     "test:portable": "node --test test/portable/Runtime.test.mjs",
-    "test:application": "node --test test/compare/Application.test.mjs"
+    "test:application": "node --test test/compare/Application.test.mjs",
+    "check:esm": "teqfw-esm-validator src --profile base"
   },
   "dependencies": {
     "@teqfw/dem": "github:teqfw/dem",
@@ -37,7 +38,8 @@
     "typescript": "^5.9.3",
     "@types/node": "^22.20.5",
     "pg": "^8.23.1",
-    "mysql2": "^3.24.5"
+    "mysql2": "^3.24.5",
+    "@flancer32/skill-teqfw-esm-validator": "^0.15.2"
   },
   "teqfw": {
     "fw": {
