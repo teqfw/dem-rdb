@@ -1,5 +1,7 @@
 # @teqfw/dem-rdb
 
+**Target transition:** The namespace identifiers in this document describe the accepted target. The current implementation and package metadata still use the former prefix; align them before using these examples. No compatibility alias is intended.
+
 Relational persistence for `@teqfw/dem`. The host selects declarations and compiles an Effective DEM, chooses the database and supplies a Knex SQLite, PostgreSQL or MariaDB connection. It initializes the schema explicitly and selects the provider through TeqFW DI. Independent providers may use different models and databases, even when entity paths overlap; path lookup does not route between them.
 
 Use the portable projection for universal DEM Core persistence. The native projection is also available within its separate capability and physical storage bounds.
@@ -10,14 +12,14 @@ contract. Host maps are separate and continue to use Format 1.
 
 ## Portable relational projection
 
-Register `TeqFw_DemRdb_` to this package's `src/` and `TeqFw_Dem_` to DEM's
+Register `TeqFw_Dem_RDb_` to this package's `src/` and `TeqFw_Dem_` to DEM's
 `src/`. Select the portable layout explicitly. The host installs the SQLite
 driver and creates a Knex connection, then opens the adapter with its compiled model:
 
 ```js
 const db = knex({client: 'sqlite3', connection: {filename: 'app.sqlite'},
     useNullAsDefault: true, pool: {min: 1, max: 1}});
-const adapter = await container.get('TeqFw_DemRdb_Adapter$');
+const adapter = await container.get('TeqFw_Dem_RDb_Adapter$');
 const backend = await adapter.open({
     model: compilation.model, knex: db, projection: 'portable',
     name: 'application', enforceRelations: true,
@@ -74,7 +76,7 @@ Both projections support execute with nonempty ordered CRUD/list commands in one
 data transaction; any failure rolls back. Results use existing DEM envelopes and
 become observable after commit. Dependent keys must be explicit. Callback transaction
 APIs and schema commands are excluded. Map both RepositoryProvider and the optional
-`TeqFw_Dem_Api_RepositoryBatch$` token to `TeqFw_DemRdb_Provider$` in host DI. Its
+`TeqFw_Dem_Api_RepositoryBatch$` token to `TeqFw_Dem_RDb_Provider$` in host DI. Its
 configuration can return projection, name, enforceRelations and an optional bound
 Runtime with model and knex.
 Portable relations are checked by default; `enforceRelations: false` selects
@@ -87,7 +89,7 @@ PostgreSQL and MariaDB run only when configured. A SQLite result does not establ
 conformance for either optional engine. The comparison suite exercises selected
 native and portable workloads against real browser IDB.
 
-For DI substitution, the host maps `TeqFw_Dem_Api_RepositoryProvider$` to `TeqFw_DemRdb_Provider$` with a DI preprocessor, and maps `TeqFw_DemRdb_Api_Configuration$` to a host component whose asynchronous `get()` returns `{model, knex, projection: 'portable'}`. The provider opens lazily on first use and caches its configuration. The host initializes the schema separately through `Adapter.open` before using repositories. The default configuration raises `UNSUPPORTED` until the host supplies one.
+For DI substitution, the host maps `TeqFw_Dem_Api_RepositoryProvider$` to `TeqFw_Dem_RDb_Provider$` with a DI preprocessor, and maps `TeqFw_Dem_RDb_Api_Configuration$` to a host component whose asynchronous `get()` returns `{model, knex, projection: 'portable'}`. The provider opens lazily on first use and caches its configuration. The host initializes the schema separately through `Adapter.open` before using repositories. The default configuration raises `UNSUPPORTED` until the host supplies one.
 
 A version-matched consumer skill is included at `skills/teqfw-dem-rdb/`. Hosts may mount it into their agent skill discovery directory.
 
@@ -98,7 +100,7 @@ To select the native projection explicitly:
 ```js
 const db = knex({client: 'sqlite3', connection: {filename: 'app.sqlite'},
     useNullAsDefault: true, pool: {min: 1, max: 1}});
-const adapter = await container.get('TeqFw_DemRdb_Adapter$');
+const adapter = await container.get('TeqFw_Dem_RDb_Adapter$');
 const provider = await adapter.open({model: compilation.model, knex: db, projection: 'native'});
 await provider.createSchema(); // Only for a new empty database.
 const users = await provider.get({path: '/app/user'});

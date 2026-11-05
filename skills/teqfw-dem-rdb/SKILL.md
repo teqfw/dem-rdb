@@ -13,8 +13,8 @@ Use `Adapter.open({model, knex, projection: 'portable'})` and explicitly call
 shutdown, schema lifecycle, migrations and backups.
 
 Map `TeqFw_Dem_Api_RepositoryProvider$` and, when needed,
-`TeqFw_Dem_Api_RepositoryBatch$` to `TeqFw_DemRdb_Provider$` through host DI
-preprocessing. Map `TeqFw_DemRdb_Api_Configuration$` to a host component whose
+`TeqFw_Dem_Api_RepositoryBatch$` to `TeqFw_Dem_RDb_Provider$` through host DI
+preprocessing. Map `TeqFw_Dem_RDb_Api_Configuration$` to a host component whose
 asynchronous `get()` returns `{model, knex, projection: 'portable'}`. The same
 configuration may include `name`, `enforceRelations`, and a model-bound `runtime`.
 A Runtime is optional for Core-only models. Extension models require a compatible
