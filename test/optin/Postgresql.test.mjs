@@ -16,11 +16,11 @@ async function open({schema,map}) {
     try {
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
-        c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
-        const adapter = await c.get('TeqFw_DemRdb_Adapter$');
+        const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
         const provider = await adapter.open({model,knex:db});
         await provider.createSchema();
         return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{await db.destroy();await admin.schema.dropSchemaIfExists(namespace,true);await admin.destroy();}};

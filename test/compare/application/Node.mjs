@@ -19,8 +19,8 @@ export class Configuration {
 /** Select the provider implementation and host configuration through DI. */
 export function Preprocessor() {
     return id => id.address === 'TeqFw_Dem_Api_RepositoryProvider'
-        ? {...id, address: 'TeqFw_DemRdb_Provider'}
-        : id.address === 'TeqFw_DemRdb_Api_Configuration'
+        ? {...id, address: 'TeqFw_Dem_RDb_Provider'}
+        : id.address === 'TeqFw_Dem_RDb_Api_Configuration'
             ? {...id, address: 'Host_Node', exportName: 'Configuration'} : id;
 }
 
@@ -35,7 +35,7 @@ export async function run() {
         const container = new Container({
             namespaces: [
                 {prefix: 'TeqFw_Dem_', target: fileURLToPath(new URL('../src', import.meta.resolve('@teqfw/dem/conformance'))), defaultExt: '.mjs'},
-                {prefix: 'TeqFw_DemRdb_', target: fileURLToPath(new URL('../../../src', import.meta.url)), defaultExt: '.mjs'},
+                {prefix: 'TeqFw_Dem_RDb_', target: fileURLToPath(new URL('../../../src', import.meta.url)), defaultExt: '.mjs'},
                 {prefix: 'Demo_', target: dirname(fileURLToPath(applicationUrl)), defaultExt: '.mjs'},
                 {prefix: 'Host_', target: fileURLToPath(new URL('./', import.meta.url)), defaultExt: '.mjs'},
             ], preprocessors: ['Host_Node__Preprocessor$'],
@@ -45,7 +45,7 @@ export async function run() {
         const {model, fingerprint} = await compiler.exec({schemas: [source]});
         const configuration = await container.get('Host_Node__Configuration$');
         configuration.set({model, knex: db});
-        const adapter = await container.get('TeqFw_DemRdb_Adapter$');
+        const adapter = await container.get('TeqFw_Dem_RDb_Adapter$');
         backend = await adapter.open(await configuration.get());
         await backend.createSchema();
         provider = await container.get('TeqFw_Dem_Api_RepositoryProvider$');

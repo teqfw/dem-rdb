@@ -8,12 +8,12 @@ import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtom
 async function open({schema,map}) {
     const c = new Container();
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
-    c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
+    c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
     const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
-    const adapter = await c.get('TeqFw_DemRdb_Adapter$');
+    const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
     const provider = await adapter.open({model,knex:db});
     await provider.createSchema();
     return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>db.destroy()};
@@ -32,13 +32,13 @@ test('schema creation is explicit and rejects an existing target', async () => {
 test('unsupported model is rejected before database effects', async () => {
     const c = new Container();
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
-    c.addNamespaceRoot('TeqFw_DemRdb_', new URL('../src', import.meta.url).pathname, '.mjs');
+    c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:2,$namespace:'/app/',record:{attributes:[{name:'data',type:{name:'json'},generation:true}]}}}]});
     const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
     try {
-        const adapter = await c.get('TeqFw_DemRdb_Adapter$');
+        const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
         await assert.rejects(adapter.open({model,knex:db}), {name:'DemRepositoryError',code:'UNSUPPORTED'});
         assert.deepEqual(await db('sqlite_master').select('name').where('type','table'), []);
     } finally { await db.destroy(); }
@@ -63,9 +63,9 @@ test('host DI selects the relational provider through DEM contract', async () =>
         const c = new Container({preprocessors:['Test_Preprocessor$']});
         c.addNamespaceRoot('Test_',new URL('./fixture',import.meta.url).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
-        c.addNamespaceRoot('TeqFw_DemRdb_',new URL('../src',import.meta.url).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../src',import.meta.url).pathname,'.mjs');
         c.enableTestMode();
-        c.register('TeqFw_DemRdb_Api_Configuration$', {get:async()=>({model:env.model,knex:env.db})});
+        c.register('TeqFw_Dem_RDb_Api_Configuration$', {get:async()=>({model:env.model,knex:env.db})});
         const provider = await c.get('TeqFw_Dem_Api_RepositoryProvider$');
         const atomic=await c.get('TeqFw_Dem_Api_RepositoryBatch$');assert.equal(atomic,provider);
         assert.equal((await atomic.execute({operations:[{path:'/app/item',method:'create',params:{record:{name:'batch DI'}}}]})).results[0].record.name,'batch DI');

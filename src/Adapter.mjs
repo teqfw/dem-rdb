@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * @namespace TeqFw_DemRdb_Adapter
+ * @namespace TeqFw_Dem_RDb_Adapter
  * @description Relational adapter for compiled DEM models.
  */
 export default class Adapter {
@@ -454,4 +454,4 @@ export default class Adapter {
         };
     }
 }
-export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID',codec:'TeqFw_DemRdb_Codec$',evaluate:'TeqFw_Dem_Repository_Select$',batch:'TeqFw_Dem_Repository_Batch$',portable:'TeqFw_DemRdb_Portable$'})});
+export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID',codec:'TeqFw_Dem_RDb_Codec$',evaluate:'TeqFw_Dem_Repository_Select$',batch:'TeqFw_Dem_Repository_Batch$',portable:'TeqFw_Dem_RDb_Portable$'})});

@@ -16,7 +16,7 @@
     "skills/"
   ],
   "scripts": {
-    "test": "find test/unit test/integration.test.mjs test/portable/Runtime.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
+    "test": "teqfw-esm-validator src --profile base && find test/unit test/integration.test.mjs test/portable/Runtime.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
     "verify": "npm test && npm run typecheck",
     "typecheck": "tsc -p tsconfig.json",
     "test:postgresql": "node --test test/optin/Postgresql.test.mjs",
@@ -44,7 +44,7 @@
       "di": {
         "namespaces": [
           {
-            "prefix": "TeqFw_DemRdb_",
+            "prefix": "TeqFw_Dem_RDb_",
             "path": "./src",
             "ext": ".mjs"
           }

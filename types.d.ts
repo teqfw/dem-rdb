@@ -33,15 +33,15 @@ export interface RdbAdapter {
 }
 
 declare global {
-    type TeqFw_DemRdb_Adapter = import("./src/Adapter.mjs").default;
-    type TeqFw_DemRdb_Adapter__Class = typeof import("./src/Adapter.mjs").default;
-    type TeqFw_DemRdb_Api_Configuration = import("./src/Api/Configuration.mjs").default;
-    type TeqFw_DemRdb_Api_Configuration__Class = typeof import("./src/Api/Configuration.mjs").default;
-    type TeqFw_DemRdb_Codec = import("./src/Codec.mjs").default;
-    type TeqFw_DemRdb_Codec__Class = typeof import("./src/Codec.mjs").default;
-    type TeqFw_DemRdb_Portable = import("./src/Portable.mjs").default;
-    type TeqFw_DemRdb_Portable__Class = typeof import("./src/Portable.mjs").default;
-    type TeqFw_DemRdb_Provider = import("./src/Provider.mjs").default;
-    type TeqFw_DemRdb_Provider__Class = typeof import("./src/Provider.mjs").default;
+    type TeqFw_Dem_RDb_Adapter = import("./src/Adapter.mjs").default;
+    type TeqFw_Dem_RDb_Adapter__Class = typeof import("./src/Adapter.mjs").default;
+    type TeqFw_Dem_RDb_Api_Configuration = import("./src/Api/Configuration.mjs").default;
+    type TeqFw_Dem_RDb_Api_Configuration__Class = typeof import("./src/Api/Configuration.mjs").default;
+    type TeqFw_Dem_RDb_Codec = import("./src/Codec.mjs").default;
+    type TeqFw_Dem_RDb_Codec__Class = typeof import("./src/Codec.mjs").default;
+    type TeqFw_Dem_RDb_Portable = import("./src/Portable.mjs").default;
+    type TeqFw_Dem_RDb_Portable__Class = typeof import("./src/Portable.mjs").default;
+    type TeqFw_Dem_RDb_Provider = import("./src/Provider.mjs").default;
+    type TeqFw_Dem_RDb_Provider__Class = typeof import("./src/Provider.mjs").default;
 }
 export {};

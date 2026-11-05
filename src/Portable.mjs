@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * @namespace TeqFw_DemRdb_Portable
+ * @namespace TeqFw_Dem_RDb_Portable
  * @description Software realization of DEM on relational columns with schema history and atomic batches.
  */
 export default class Portable {
@@ -242,4 +242,4 @@ export default class Portable {
         };
     }
 }
-export const __deps__=Object.freeze({default:Object.freeze({codec:'TeqFw_DemRdb_Codec$',batch:'TeqFw_Dem_Repository_Batch$',normalize:'TeqFw_Dem_Repository_Normalize$',errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID'})});
+export const __deps__=Object.freeze({default:Object.freeze({codec:'TeqFw_Dem_RDb_Codec$',batch:'TeqFw_Dem_Repository_Batch$',normalize:'TeqFw_Dem_Repository_Normalize$',errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID'})});

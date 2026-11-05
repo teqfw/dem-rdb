@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * @namespace TeqFw_DemRdb_Provider
+ * @namespace TeqFw_Dem_RDb_Provider
  * @description Host-selected repository and atomic batch provider.
  */
 export default class Provider {
@@ -26,4 +26,4 @@ export default class Provider {
         this.close=async function () {closed=true;if (pending) await (await pending).close();};
     }
 }
-export const __deps__=Object.freeze({default:Object.freeze({adapter:'TeqFw_DemRdb_Adapter$',configuration:'TeqFw_DemRdb_Api_Configuration$',errors:'TeqFw_Dem_Repository_Error$'})});
+export const __deps__=Object.freeze({default:Object.freeze({adapter:'TeqFw_Dem_RDb_Adapter$',configuration:'TeqFw_Dem_RDb_Api_Configuration$',errors:'TeqFw_Dem_Repository_Error$'})});

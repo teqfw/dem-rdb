@@ -14,7 +14,7 @@ export async function harness(client,{definitions=[]}={}) {
     const db=knex({client,connection:client==='sqlite3' ? {filename:':memory:'} : connection(client),searchPath:client==='pg' ? [schema] : undefined,useNullAsDefault:true,pool:{min:0,max:client==='sqlite3' ? 1 : 4}});
     const c=new Container();
     c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
-    c.addNamespaceRoot('TeqFw_DemRdb_',process.env.TEQFW_DEM_RDB_ROOT ? resolve(process.env.TEQFW_DEM_RDB_ROOT,'src') : new URL('../../src',import.meta.url).pathname,'.mjs');
+    c.addNamespaceRoot('TeqFw_Dem_RDb_',process.env.TEQFW_DEM_RDB_ROOT ? resolve(process.env.TEQFW_DEM_RDB_ROOT,'src') : new URL('../../src',import.meta.url).pathname,'.mjs');
     const providers=[];
     let owned=false;
     try {
@@ -26,7 +26,7 @@ export async function harness(client,{definitions=[]}={}) {
         const registry=await c.get('TeqFw_Dem_Registry$');
         if(definitions.length)registry.register(definitions);
         registry.finalize();
-        const compiler=await c.get('TeqFw_Dem_Compile$'),adapter=await c.get('TeqFw_DemRdb_Adapter$'),selection=await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$');
+        const compiler=await c.get('TeqFw_Dem_Compile$'),adapter=await c.get('TeqFw_Dem_RDb_Adapter$'),selection=await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$');
         const runtime=await c.get('TeqFw_Dem_Repository_Runtime$');
         const close=async()=>{
             try {

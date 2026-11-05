@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * @namespace TeqFw_DemRdb_Codec
+ * @namespace TeqFw_Dem_RDb_Codec
  * @description Reversible core DEM values and dialect-specific physical column types.
  */
 export default class Codec {

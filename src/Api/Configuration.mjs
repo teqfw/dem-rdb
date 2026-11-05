@@ -1,6 +1,6 @@
 // @ts-check
 /**
- * @namespace TeqFw_DemRdb_Api_Configuration
+ * @namespace TeqFw_Dem_RDb_Api_Configuration
  * @description Host-supplied model and connection.
  */
 export default class Configuration {
