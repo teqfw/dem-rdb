@@ -97,7 +97,12 @@ mode requires checked relations.
 
 Run `npm run test:portable` for portable values, atomic commands, long and structured
 keys, structural history and failed schema publication. SQLite is mandatory;
-PostgreSQL and MariaDB run only when configured. A SQLite result does not establish
+PostgreSQL and MariaDB adapter suites run only when configured. PDE Gate targets
+the same logical model and repository/batch contracts on SQLite and PostgreSQL;
+Gate must verify its own authority workflows on both. Adapter support or a skipped
+PostgreSQL suite does not establish verified Gate behavior on PostgreSQL. Gate
+deployment must ensure a single instance per database; batch atomicity does not
+serialize authority operations across instances. A SQLite result does not establish
 conformance for either optional engine. The comparison suite exercises selected
 native and portable workloads against real browser IDB.
 
