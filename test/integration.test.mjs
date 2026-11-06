@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
+import Connection from '../src/Connection.mjs';
 import {register} from '@teqfw/dem/conformance';
 import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 
@@ -12,11 +13,13 @@ async function open({schema,map}) {
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
-    const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
+    const connection = new Connection({knexFactory:knex});
+    await connection.init({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
+    const db = connection.getClient();
     const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-    const provider = await adapter.open({model,knex:db});
+    const provider = await adapter.open({model,connection});
     await provider.createSchema();
-    return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>db.destroy()};
+    return {provider,model,db,connection,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>connection.disconnect()};
 }
 register({test,assert,open});
 
@@ -36,12 +39,14 @@ test('unsupported model is rejected before database effects', async () => {
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:2,$namespace:'/app/',record:{attributes:[{name:'data',type:{name:'json'},generation:true}]}}}]});
-    const db = knex({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
+    const connection = new Connection({knexFactory:knex});
+    await connection.init({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
+    const db = connection.getClient();
     try {
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        await assert.rejects(adapter.open({model,knex:db}), {name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await assert.rejects(adapter.open({model,connection}), {name:'DemRepositoryError',code:'UNSUPPORTED'});
         assert.deepEqual(await db('sqlite_master').select('name').where('type','table'), []);
-    } finally { await db.destroy(); }
+    } finally { await connection.disconnect(); }
 });
 
 test('repository provider obtains the model and connection from its host configuration', async () => {
@@ -49,28 +54,11 @@ test('repository provider obtains the model and connection from its host configu
     try {
         const Provider = (await import('../src/Provider.mjs')).default;
         let calls = 0;
-        const provider = new Provider({configuration:{get:async () => { calls++; return {}; }},adapter:{open:async () => env.provider}});
+        const provider = new Provider({configuration:{get:async () => { calls++; return {}; }},connection:env.connection,adapter:{open:async () => env.provider}});
         const repo = await provider.get({path:'/app/item'});
         await repo.create({record:{name:'Ada'}});
         assert.equal((await provider.get({path:'/app/item'})) !== null, true);
         assert.equal(calls, 1);
-    } finally { await env.close(); }
-});
-
-test('host DI selects the relational provider through DEM contract', async () => {
-    const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
-    try {
-        const c = new Container({preprocessors:['Test_Preprocessor$']});
-        c.addNamespaceRoot('Test_',new URL('./fixture',import.meta.url).pathname,'.mjs');
-        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
-        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../src',import.meta.url).pathname,'.mjs');
-        c.enableTestMode();
-        c.register('TeqFw_Dem_RDb_Api_Configuration$', {get:async()=>({model:env.model,knex:env.db})});
-        const provider = await c.get('TeqFw_Dem_Api_RepositoryProvider$');
-        const atomic=await c.get('TeqFw_Dem_Api_RepositoryBatch$');assert.equal(atomic,provider);
-        assert.equal((await atomic.execute({operations:[{path:'/app/item',method:'create',params:{record:{name:'batch DI'}}}]})).results[0].record.name,'batch DI');
-        const repo = await provider.get({path:'/app/item'});
-        assert.deepEqual(await repo.create({record:{name:'Ada'}}),{record:{name:'Ada'}});
     } finally { await env.close(); }
 });
 
@@ -80,6 +68,138 @@ test('canonical nested Format 2 paths resolve', async () => {
         const repo = await env.provider.get({path:'/app/catalog/item'});
         assert.deepEqual(await repo.create({record:{name:'ok'}}), {record:{name:'ok'}});
     } finally { await env.close(); }
+});
+
+test('CFG, real DI routing and independent Providers share owned Connections safely', async()=>{
+    const c=new Container({
+        namespaces:[
+            {prefix:'TeqFw_Cfg_',target:new URL('../src',import.meta.resolve('@teqfw/cfg/src/Reader.mjs')).pathname,defaultExt:'.mjs'},
+            {prefix:'TeqFw_Dem_',target:new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,defaultExt:'.mjs'},
+            {prefix:'TeqFw_Dem_RDb_',target:new URL('../src',import.meta.url).pathname,defaultExt:'.mjs'},
+            {prefix:'Test_',target:new URL('./fixture',import.meta.url).pathname,defaultExt:'.mjs'},
+        ],
+        preprocessors:['Test_Dem_Preprocessor$'],
+    });
+    const bootstrap=[];
+    const loader=await c.get('TeqFw_Cfg_Loader$');
+    await loader.load([{id:'fixture',load:async()=>Object.entries({
+        TEQFW_DEM_RDB__CLIENT:'sqlite3',
+        TEQFW_DEM_RDB__FILENAME:':memory:',
+        TEQFW_DEM_RDB__USE_NULL_AS_DEFAULT:true,
+        TEQFW_DEM_RDB__EXTRA:{pool:{min:1,max:1}},
+        TEQFW_DEM_RDB__MAIN_CLIENT:'sqlite3',
+        TEQFW_DEM_RDB__MAIN_FILENAME:':memory:',
+        TEQFW_DEM_RDB__MAIN_EXTRA:{pool:{min:1,max:1},useNullAsDefault:true},
+        TEQFW_DEM_RDB__OTHER_CLIENT:'sqlite3',
+        TEQFW_DEM_RDB__OTHER_FILENAME:':memory:',
+        TEQFW_DEM_RDB__OTHER_EXTRA:{pool:{min:1,max:1},useNullAsDefault:true},
+    }).map(([key,value])=>({key,value}))}]);
+    bootstrap.push('cfg-loaded');
+    const config=await c.get('TeqFw_Dem_RDb_Config$');
+    assert.equal(config.get().client,'sqlite3');
+    assert.equal(config.get('main').connection.filename,':memory:');
+    assert.equal(config.get('other').connection.filename,':memory:');
+    const main=await c.get('Test_Dem_Connection_Main$'),other=await c.get('Test_Dem_Connection_Other$');
+    const fallback=await c.get('TeqFw_Dem_RDb_Connection$');
+    const transientA=await c.get('TeqFw_Dem_RDb_Connection$$'),transientB=await c.get('TeqFw_Dem_RDb_Connection$$');
+    const initializationBackends=[];
+    let consumerA,consumerB;
+    try {
+    await main.init(config.get('main'));
+    await other.init(config.get('other'));
+    await fallback.init(config.get());
+    await transientA.init(config.get());
+    await transientB.init(config.get());
+    bootstrap.push('connections-ready');
+    assert.notEqual(transientA,transientB);
+    assert.notEqual(main,other);
+    assert.notEqual(fallback,main);
+    const registry=await c.get('TeqFw_Dem_Registry$');registry.finalize();
+    const compiler=await c.get('TeqFw_Dem_Compile$');
+    const modelA=(await compiler.exec({schemas:[{packageName:'fixture',filename:'a.json',document:{$format:2,$namespace:'/same/',item:{attributes:[{name:'name',type:{name:'text'}}]}}}]})).model;
+    const modelB=(await compiler.exec({schemas:[{packageName:'fixture',filename:'b.json',document:{$format:2,$namespace:'/same/',item:{attributes:[{name:'count',type:{name:'integer'}}]}}}]})).model;
+    const runtimeFactory=await c.get('TeqFw_Dem_Repository_Runtime$');
+    const runtimeA=runtimeFactory.bind({model:modelA,registry}),runtimeB=runtimeFactory.bind({model:modelB,registry});
+    bootstrap.push('models-bound');
+    const placementA=await c.get('Test_Dem_Config_A$'),placementB=await c.get('Test_Dem_Config_B$');
+    placementA.init({model:modelA,runtime:runtimeA});placementB.init({model:modelB,runtime:runtimeB});
+    const adapter=await c.get('TeqFw_Dem_RDb_Adapter$');
+    for(const placement of [placementA,placementB]) {
+        const options=await placement.get();
+        const backend=await adapter.open({...options,connection:main});
+        const acquired={backend,closed:false};
+        initializationBackends.push(acquired);
+        try { await backend.createSchema(); }
+        finally { try { await backend.close(); } finally { acquired.closed=true; } }
+    }
+    bootstrap.push('schemas-ready');
+    const bootstrapClientAccesses=main.getClientCalls();
+        consumerA=await c.get('Test_Dem_Consumer_A$');
+        consumerB=await c.get('Test_Dem_Consumer_B$');
+        bootstrap.push('consumers-active');
+        assert.deepEqual(bootstrap,['cfg-loaded','connections-ready','models-bound','schemas-ready','consumers-active']);
+        assert.equal(consumerA.provider,consumerA.batch);
+        assert.equal(consumerB.provider,consumerB.batch);
+        assert.notEqual(consumerA.provider,consumerB.provider);
+        const repoA=await consumerA.provider.get({path:'/same/item'});
+        assert.equal(main.getClientCalls(),bootstrapClientAccesses+1);
+        await repoA.create({record:{name:'Ada'}});
+        const batchB=await consumerB.batch.execute({operations:[{path:'/same/item',method:'create',params:{record:{count:7}}}]});
+        assert.equal(main.getClientCalls(),bootstrapClientAccesses+2);
+        assert.equal(batchB.results[0].record.count,'7');
+        assert.deepEqual((await repoA.list({selection:{}})).records,[{name:'Ada'}]);
+        assert.deepEqual((await (await consumerB.provider.get({path:'/same/item'})).list({selection:{}})).records,[{count:'7'}]);
+        assert.notEqual(initializationBackends[0].backend,initializationBackends[1].backend);
+        const consumerOther=await c.get('Test_Dem_Consumer_Other$');
+        assert.equal(consumerOther.connection,other);
+        assert.notEqual(other.getClient(),main.getClient());
+        assert.notEqual(fallback.getClient(),main.getClient());
+        assert.notEqual(transientA.getClient(),transientB.getClient());
+        await consumerA.provider.close();
+        await assert.rejects(repoA.list({selection:{}}),{code:'STORAGE'});
+        assert.deepEqual((await (await consumerB.provider.get({path:'/same/item'})).list({selection:{}})).records,[{count:'7'}]);
+        assert.equal(main.getClient().client.config.client,'sqlite3');
+    } finally {
+        const cleanup=[consumerA?.provider?.close(),consumerB?.provider?.close(),...initializationBackends.filter(item=>!item.closed).map(item=>item.backend.close()),
+            main.disconnect(),other.disconnect(),fallback.disconnect(),transientA.disconnect(),transientB.disconnect()].filter(Boolean);
+        const results=await Promise.allSettled(cleanup);
+        const failures=results.filter(result=>result.status==='rejected').map(result=>result.reason);
+        if(failures.length)throw new AggregateError(failures,'Fixture bootstrap cleanup failed.');
+    }
+});
+
+test('DI routing rejects an unmatched repository consumer',async()=>{
+    const c=new Container({namespaces:[
+        {prefix:'Test_',target:new URL('./fixture',import.meta.url).pathname,defaultExt:'.mjs'},
+    ],preprocessors:['Test_Dem_Preprocessor$']});
+    await assert.rejects(c.get('Test_Dem_Consumer_Unmatched$'),/explicit fixture consumer/);
+});
+
+test('partial connection bootstrap failure disconnects every resolved Connection',async()=>{
+    const c=new Container({namespaces:[
+        {prefix:'TeqFw_Cfg_',target:new URL('../src',import.meta.resolve('@teqfw/cfg/src/Reader.mjs')).pathname,defaultExt:'.mjs'},
+        {prefix:'TeqFw_Dem_RDb_',target:new URL('../src',import.meta.url).pathname,defaultExt:'.mjs'},
+        {prefix:'Test_',target:new URL('./fixture',import.meta.url).pathname,defaultExt:'.mjs'},
+    ]});
+    const loader=await c.get('TeqFw_Cfg_Loader$');
+    await loader.load([{id:'failure',load:async()=>[
+        {key:'TEQFW_DEM_RDB__MAIN_CLIENT',value:'sqlite3'},
+        {key:'TEQFW_DEM_RDB__MAIN_FILENAME',value:':memory:'},
+        {key:'TEQFW_DEM_RDB__MAIN_EXTRA',value:{pool:{min:1,max:1}}},
+        {key:'TEQFW_DEM_RDB__BROKEN_CLIENT',value:'not-a-knex-client'},
+    ]}]);
+    const config=await c.get('TeqFw_Dem_RDb_Config$');
+    const main=await c.get('Test_Dem_Connection_Main$'),broken=await c.get('Test_Dem_Connection_Other$');
+    try {
+        await main.init(config.get('main'));
+        await assert.rejects(broken.init(config.get('broken')),/Unknown configuration option/);
+    } finally {
+        const results=await Promise.allSettled([main.disconnect(),broken.disconnect()]);
+        const failures=results.filter(result=>result.status==='rejected').map(result=>result.reason);
+        if(failures.length)throw new AggregateError(failures,'Fixture Connection cleanup failed.');
+    }
+    assert.throws(()=>main.getClient());
+    assert.throws(()=>broken.getClient());
 });
 
 test('writes fail before effects when foreign keys have been disabled', async () => {

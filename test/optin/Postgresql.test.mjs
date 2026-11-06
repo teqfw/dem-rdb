@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
+import Connection from '../../src/Connection.mjs';
 import {register} from '@teqfw/dem/conformance';
 import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 import {createHash, randomBytes} from 'node:crypto';
@@ -10,9 +11,13 @@ const connection = {host:process.env.TEQFW_DB__PG_HOST,user:process.env.TEQFW_DB
 if (Object.values(connection).some(value => !value)) throw new Error('PostgreSQL test connection environment is incomplete.');
 async function open({schema,map}) {
     const namespace = 'dem_rdb_test_' + randomBytes(8).toString('hex');
-    const admin = knex({client:'pg',connection,pool:{min:0,max:1}});
+    const adminConnection=new Connection({knexFactory:knex});
+    await adminConnection.init({client:'pg',connection,pool:{min:0,max:1}});
+    const admin=adminConnection.getClient();
     await admin.schema.createSchema(namespace);
-    const db = knex({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:3}});
+    const ownedConnection=new Connection({knexFactory:knex});
+    await ownedConnection.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:3}});
+    const db=ownedConnection.getClient();
     try {
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
@@ -21,10 +26,10 @@ async function open({schema,map}) {
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        const provider = await adapter.open({model,knex:db});
+        const provider = await adapter.open({model,connection:ownedConnection});
         await provider.createSchema();
-        return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{await db.destroy();await admin.schema.dropSchemaIfExists(namespace,true);await admin.destroy();}};
-    } catch (error) { await db.destroy(); await admin.schema.dropSchemaIfExists(namespace,true); await admin.destroy(); throw error; }
+        return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{await ownedConnection.disconnect();await admin.schema.dropSchemaIfExists(namespace,true);await adminConnection.disconnect();}};
+    } catch (error) { await ownedConnection.disconnect(); await admin.schema.dropSchemaIfExists(namespace,true); await adminConnection.disconnect(); throw error; }
 }
 register({test,assert,open});
 

@@ -1,6 +1,5 @@
 // @ts-check
 import Container from '@teqfw/di';
-import knex from 'knex';
 import {mkdtemp, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
@@ -8,54 +7,47 @@ import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
 import {source} from '@teqfw/dem/conformance/application/schema';
 
-/** Host-owned configuration, initialized before application resolution. */
-export class Configuration {
-    constructor() {
-        let options;
-        this.set = value => { options = value; };
-        this.get = async () => { if (!options) throw new Error('Host is not configured.'); return options; };
-    }
-}
-/** Select the provider implementation and host configuration through DI. */
-export function Preprocessor() {
-    return id => id.address === 'TeqFw_Dem_Api_RepositoryProvider'
-        ? {...id, address: 'TeqFw_Dem_RDb_Provider'}
-        : id.address === 'TeqFw_Dem_RDb_Api_Configuration'
-            ? {...id, address: 'Host_Node', exportName: 'Configuration'} : id;
-}
-
 /** Execute the shared application in an isolated temporary SQLite file. */
 export async function run() {
     const directory = await mkdtemp(join(tmpdir(), 'dem-application-'));
-    const db = knex({client: 'sqlite3', connection: {filename: join(directory, 'tasks.sqlite')},
-        useNullAsDefault: true, pool: {min: 1, max: 1}});
-    let backend, provider;
+    let backend, provider, connection;
     try {
         const applicationUrl = import.meta.resolve('@teqfw/dem/conformance/application');
         const container = new Container({
             namespaces: [
                 {prefix: 'TeqFw_Dem_', target: fileURLToPath(new URL('../src', import.meta.resolve('@teqfw/dem/conformance'))), defaultExt: '.mjs'},
                 {prefix: 'TeqFw_Dem_RDb_', target: fileURLToPath(new URL('../../../src', import.meta.url)), defaultExt: '.mjs'},
+                {prefix: 'TeqFw_Cfg_', target: fileURLToPath(new URL('../src', import.meta.resolve('@teqfw/cfg/src/Reader.mjs'))), defaultExt: '.mjs'},
                 {prefix: 'Demo_', target: dirname(fileURLToPath(applicationUrl)), defaultExt: '.mjs'},
-                {prefix: 'Host_', target: fileURLToPath(new URL('./', import.meta.url)), defaultExt: '.mjs'},
-            ], preprocessors: ['Host_Node__Preprocessor$'],
+                {prefix: 'Host_', target: fileURLToPath(new URL('./Host', import.meta.url)), defaultExt: '.mjs'},
+            ], preprocessors: ['Host_Node_Preprocessor$'],
         });
+        const loader = await container.get('TeqFw_Cfg_Loader$');
+        await loader.load([{id:'comparison',load:async()=>[
+            {key:'TEQFW_DEM_RDB__CLIENT',value:'sqlite3'},
+            {key:'TEQFW_DEM_RDB__FILENAME',value:join(directory,'tasks.sqlite')},
+            {key:'TEQFW_DEM_RDB__USE_NULL_AS_DEFAULT',value:true},
+            {key:'TEQFW_DEM_RDB__EXTRA',value:{pool:{min:1,max:1}}},
+        ]}]);
         (await container.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await container.get('TeqFw_Dem_Compile$');
         const {model, fingerprint} = await compiler.exec({schemas: [source]});
-        const configuration = await container.get('Host_Node__Configuration$');
-        configuration.set({model, knex: db});
+        const configuration = await container.get('Host_Node_Configuration$');
+        configuration.set({model, projection:'portable', name:'application'});
+        const rdbConfig = await container.get('TeqFw_Dem_RDb_Config$');
+        connection = await container.get('TeqFw_Dem_RDb_Connection$');
+        await connection.init(rdbConfig.get());
         const adapter = await container.get('TeqFw_Dem_RDb_Adapter$');
-        backend = await adapter.open(await configuration.get());
+        backend = await adapter.open({...await configuration.get(),connection});
         await backend.createSchema();
-        provider = await container.get('TeqFw_Dem_Api_RepositoryProvider$');
         const application = await container.get('Demo_Workflow$');
         const transcript = await application.exec({model});
+        provider = await container.get('Host_Node_Provider$');
         const applicationHash = createHash('sha256').update(await readFile(new URL(applicationUrl))).digest('hex');
         return {model, fingerprint, transcript, applicationHash};
     } finally {
         try { try { await provider?.close(); } finally { await backend?.close(); } }
-        finally { try { await db.destroy(); } finally { await rm(directory, {recursive: true, force: true}); } }
+        finally { try { await connection?.disconnect(); } finally { await rm(directory, {recursive: true, force: true}); } }
     }
 }
 

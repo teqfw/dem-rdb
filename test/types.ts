@@ -1,12 +1,13 @@
-import type {RdbAdapter, RdbConfiguration, RdbBackend, RdbRuntime} from '../types.js';
+import type {RdbAdapter, RdbConfiguration, RdbBackend, RdbRuntime, RdbConnection} from '../types.js';
 
 declare const adapter: RdbAdapter;
 declare const config: RdbConfiguration;
 declare const runtime: RdbRuntime;
+declare const connection: RdbConnection;
 const configWithRuntime: RdbConfiguration = {...config, runtime};
 void configWithRuntime;
 async function check(): Promise<RdbBackend> {
-    const backend = await adapter.open(config);
+    const backend = await adapter.open({...config, connection});
     await backend.createSchema();
     await backend.get({path:'/app/item'});
     return backend;

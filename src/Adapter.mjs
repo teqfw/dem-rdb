@@ -185,16 +185,16 @@ export default class Adapter {
             if (JSON.stringify(actual)!==JSON.stringify(expected)) fail('UNSUPPORTED','Database relations do not match the effective model.');
         };
         /**
-         * @param {object} deps
-         * @param {any} deps.model
-         * @param {any} deps.knex
-         * @param {string} [deps.projection]
-         * @param {string} [deps.name]
-         * @param {boolean} [deps.enforceRelations]
-         * @param {any} [deps.runtime]
+         * @param {any} options
          * @returns {Promise<any>}
          */
-        this.open = async function ({model, knex, projection:strategy='native',name='default',enforceRelations=true,runtime}) {
+        this.open = async function (options) {
+            if (!options || typeof options !== 'object' || Array.isArray(options)
+                || Object.keys(options).some(key => !['model','connection','projection','name','enforceRelations','runtime'].includes(key))
+                || !Object.hasOwn(options, 'model') || !Object.hasOwn(options, 'connection')) fail('INVALID_INPUT','A model and DEM-RDB Connection are required.');
+            const {model, connection, projection:strategy='native',name='default',enforceRelations=true,runtime}=options;
+            if (typeof connection?.getClient !== 'function') fail('INVALID_INPUT','A ready DEM-RDB Connection is required.');
+            const knex = connection.getClient();
             if (!['native','portable'].includes(strategy)) fail('INVALID_INPUT','Unknown relational projection.');
             if (!model?.entities) fail('INVALID_INPUT','A compiled DEM model is required.');
             /** @param {any} value @returns {string} */
@@ -443,7 +443,7 @@ export default class Adapter {
                 const commands=batchOps.validate({operations:params.operations});
                 try {
                     return await knex.transaction(async trx=>{
-                        const backend=await adapter.open({model,knex:trx,...(runtime ? {runtime} : {})});
+                        const backend=await adapter.open({model,connection:{getClient:()=>trx},...(runtime ? {runtime} : {})});
                         const results=[];
                         for (const command of commands) results.push(await (await backend.get({path:command.path}))[command.method](command.params));
                         return {results};

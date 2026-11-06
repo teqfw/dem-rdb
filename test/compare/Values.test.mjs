@@ -5,13 +5,16 @@ import {browserObservation} from './Browser.mjs';
 import {createHash,randomBytes} from 'node:crypto';
 import Container from '@teqfw/di';
 import knex from 'knex';
+import Connection from '../../src/Connection.mjs';
 import {schema,map,exercise,atomicSchema,exerciseAtomic,extendedSchema,exerciseExtended,exerciseEvolution} from '@teqfw/dem/conformance/values';
 import {harness,enabled,connection} from '../portable/Harness.mjs';
 
 const table=(path,hashed)=>hashed ? 'dem_'+createHash('sha256').update(path).digest('hex').slice(0,32) : 'dem_'+Buffer.from(path).toString('hex');
 async function native(client,document,host,runWorkload,expected) {
     const namespace='dem_compare_'+randomBytes(6).toString('hex');
-    const db=knex({client,searchPath:client==='pg' ? [namespace] : undefined,connection:client==='sqlite3' ? {filename:':memory:'} : connection(client),useNullAsDefault:true,pool:{min:0,max:client==='sqlite3' ? 1 : 4}});
+    const ownedConnection=new Connection({knexFactory:knex});
+    await ownedConnection.init({client,searchPath:client==='pg' ? [namespace] : undefined,connection:client==='sqlite3' ? {filename:':memory:'} : connection(client),useNullAsDefault:true,pool:{min:0,max:client==='sqlite3' ? 1 : 4}});
+    const db=ownedConnection.getClient();
     let owned=false,created=false;
     const paths=Object.keys(document).filter(p=>p.startsWith('/'));
     try {
@@ -23,7 +26,7 @@ async function native(client,document,host,runWorkload,expected) {
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler=await c.get('TeqFw_Dem_Compile$');
         const {model}=await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document}],...(host ? {map:{packageName:'test',filename:'map.json',document:host}} : {})});
-        const adapter=await c.get('TeqFw_Dem_RDb_Adapter$'),provider=await adapter.open({model,knex:db});
+        const adapter=await c.get('TeqFw_Dem_RDb_Adapter$'),provider=await adapter.open({model,connection:ownedConnection});
         await provider.createSchema();created=true;
         assert.deepEqual(await runWorkload({provider,assert}),expected);
     } finally {
@@ -32,7 +35,7 @@ async function native(client,document,host,runWorkload,expected) {
             for(const path of paths) {const entity=document[path];for(const [i,relation] of Object.values(entity.relations ?? {}).entries())await db.schema.alterTable(table(path,true),t=>t.dropForeign(relation.attributes,table(path,true)+'_f_'+i));}
             for(const path of paths)await db.schema.dropTable(table(path,true));
         }
-        await db.destroy();
+        await ownedConnection.disconnect();
     }
 }
 

@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {register} from '@teqfw/dem/conformance';
 import {schema,map,exercise,atomicSchema,exerciseAtomic,extendedSchema,exerciseExtended,exerciseEvolution,evolutionSchemas} from '@teqfw/dem/conformance/values';
 import {harness,enabled} from './Harness.mjs';
@@ -20,7 +21,10 @@ for(const client of ['sqlite3','pg','mysql2']) {
     }
     test(client+' portable structural evolution and retained history',async()=>{
         const h=await harness(client);
-        try {await exerciseEvolution({assert,open:async schema=>(await h.open({schema})).provider});}
+        try {await exerciseEvolution({assert,open:async schema=>{
+            const provider=(await h.open({schema})).provider;
+            return {...provider,createSchema:options=>provider.createSchema(options ?? {publish:true})};
+        }});}
         finally {await h.close();}
     });
     test(client+' portable failed schema publication preserves data and prior snapshot',async()=>{
@@ -31,10 +35,10 @@ for(const client of ['sqlite3','pg','mysql2']) {
             const next=await h.open({schema:schemas[1]});
             listener=query=>{if(query.method==='insert' && query.sql.includes(h.prefix+'_history')) {h.db.removeListener('query',listener);throw new Error('Injected history publication failure');}};
             h.db.on('query',listener);
-            await assert.rejects(next.provider.createSchema(),{code:'STORAGE'});
+            await assert.rejects(next.provider.createSchema({publish:true}),{code:'STORAGE'});
             assert.equal((await first.provider.getSchemaHistory()).schemas.length,1);
             assert.equal((await (await first.provider.get({path:'/evolution/item'})).list({selection:{}})).records[0].name,'before');
-            assert.equal((await next.provider.createSchema()).version,2);
+            assert.equal((await next.provider.createSchema({publish:true})).version,2);
         } finally {if(listener)h.db.removeListener('query',listener);await h.close();}
     });
     test(client+' portable descriptive relation profile accepts missing targets',async()=>{
@@ -117,7 +121,8 @@ test('portable schema publication is idempotent, records complete snapshots and 
         await oldRepository.create({record:{name:'retained'}});
         assert.deepEqual(await oldProvider.createSchema(),{version:1});
         const nextProvider=await h.attach({model:newModel,name:'evolution'});
-        assert.deepEqual(await nextProvider.createSchema(),{version:2});
+        await assert.rejects(nextProvider.createSchema(),{code:'UNSUPPORTED'});
+        assert.deepEqual(await nextProvider.createSchema({publish:true}),{version:2});
         const history=await nextProvider.getSchemaHistory();
         assert.deepEqual(history.schemas,[{version:1,model:oldModel},{version:2,model:newModel}]);
         await assert.rejects(oldRepository.list({selection:{}}),{code:'STORAGE'});
@@ -125,6 +130,36 @@ test('portable schema publication is idempotent, records complete snapshots and 
         assert.deepEqual(await reopened.createSchema(),{version:2});
         assert.equal((await reopened.getSchemaHistory()).schemas.length,2);
         assert.deepEqual((await (await reopened.get({path:'/evolution/item'})).list({selection:{}})).records,[{name:'retained',category:'general'}]);
+    } finally {await h.close();}
+});
+
+test('portable startup rejects model and physical drift without changing the scope',async()=>{
+    const h=await harness('sqlite3');
+    try {
+        const original={$format:2,$namespace:'/safe/',item:{attributes:[{name:'name',type:{name:'text'}}]}};
+        const changed={$format:2,$namespace:'/safe/',item:{attributes:[{name:'name',type:{name:'text'}},{name:'category',type:{name:'text'},default:'new'}]}};
+        const model=await h.compile({schema:original}),nextModel=await h.compile({schema:changed});
+        const first=await h.attach({model,name:'safe'});
+        await first.createSchema();
+        await (await first.get({path:'/safe/item'})).create({record:{name:'kept'}});
+        const table='dem_p_'+createHash('sha256').update('safe').digest('hex').slice(0,12)+'_'+createHash('sha256').update('/safe/item').digest('hex').slice(0,24);
+        const beforeColumns=await h.db.raw('SELECT name,type FROM pragma_table_info(?)',[table]);
+        const beforeHistory=await first.getSchemaHistory();
+        const changedProvider=await h.attach({model:nextModel,name:'safe'});
+        await assert.rejects(changedProvider.createSchema(),{code:'UNSUPPORTED'});
+        assert.deepEqual(await h.db.raw('SELECT name,type FROM pragma_table_info(?)',[table]),beforeColumns);
+        assert.deepEqual((await first.getSchemaHistory()).schemas,beforeHistory.schemas);
+        assert.deepEqual((await (await first.get({path:'/safe/item'})).list({selection:{}})).records,[{name:'kept'}]);
+        await changedProvider.createSchema({publish:true});
+
+        const damagedModel=await h.compile({schema:{$format:2,$namespace:'/damaged/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
+        const damaged=await h.attach({model:damagedModel,name:'damaged'});
+        await damaged.createSchema();
+        const damagedTable='dem_p_'+createHash('sha256').update('damaged').digest('hex').slice(0,12)+'_'+createHash('sha256').update('/damaged/item').digest('hex').slice(0,24);
+        await h.db.schema.dropTable(damagedTable);
+        const reopened=await h.attach({model:damagedModel,name:'damaged'});
+        await assert.rejects(reopened.createSchema(),{code:'UNSUPPORTED'});
+        assert.equal(await h.db.schema.hasTable(damagedTable),false);
     } finally {await h.close();}
 });
 
@@ -140,7 +175,7 @@ test('portable stale schema publisher cannot replace the current model',async()=
         await oldRepository.create({record:{name:'retained'}});
 
         const currentProvider=await h.attach({model:newModel,name:'stale_publisher'});
-        assert.deepEqual(await currentProvider.createSchema(),{version:2});
+        assert.deepEqual(await currentProvider.createSchema({publish:true}),{version:2});
         await assert.rejects(oldProvider.createSchema(),{code:'STORAGE'});
 
         const history=await currentProvider.getSchemaHistory();

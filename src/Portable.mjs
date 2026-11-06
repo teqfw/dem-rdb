@@ -170,11 +170,15 @@ export default class Portable {
                 try {await current(knex);await verify(knex,path);} catch(error) {throw mapped(error);}
                 return Object.fromEntries(['create','read','update','delete','list'].map(method=>[method,async params=>(await execute({operations:[{path,method,params}]})).results[0]]));
             };
-            /** @returns {Promise<any>} */
-            const createSchema=async function () {
+            /** @param {any} options @returns {Promise<any>} */
+            const createSchema=async function (options={}) {
                 live();
+                if (!options || typeof options !== 'object' || Array.isArray(options) || Object.getPrototypeOf(options)!==Object.prototype
+                    || Object.keys(options).some(key=>key!=='publish')
+                    || (Object.hasOwn(options,'publish') && typeof options.publish!=='boolean')) fail('INVALID_INPUT','Invalid portable schema options.');
+                const publishEnabled=options.publish===true;
                 const createdTables=[],addedColumns=[];
-                let previous;
+                let previous,sameModel=false;
                 /** @param {any} connection @returns {Promise<void>} */
                 const prepare=async function (connection) {
                     await engine(connection,[]);
@@ -186,6 +190,8 @@ export default class Portable {
                         previous=await connection(meta).where({id:'current'}).first();
                         if (!previous || Number(previous.layout)!==1 || parsed(previous.scope)!==name) fail('UNSUPPORTED','Unknown metadata revision.');
                         if (boundVersion!==undefined && boundVersion!==Number(previous.version)) {closed=true;fail('STORAGE','Provider was invalidated by a schema update.');}
+                        sameModel=canonical(parsed(previous.model))===identity;
+                        if (!sameModel && !publishEnabled) fail('UNSUPPORTED','Portable schema publication requires createSchema({publish:true}).');
                     } else {
                         for (const path of paths) if (await connection.schema.hasTable(table(path))) fail('CONFLICT','Unowned target table already exists.');
                         await connection.schema.createTable(meta,t=>{if(dialect==='mysql2')t.engine('InnoDB');t.string('id',16).primary();t.specificType('scope',bytes).notNullable();t.integer('version').notNullable();t.integer('layout').notNullable();t.specificType('model',bytes).notNullable();t.specificType('sequences',bytes).notNullable();});createdTables.push(meta);
@@ -193,23 +199,36 @@ export default class Portable {
                     }
                     if (hasMeta) await engine(connection,[meta,history]);
                     const models=hasMeta ? (await connection(history).select('model')).map(row=>parsed(row.model)) : [];
+                    const plans=[];
                     for (const path of paths) {
                         const exists=await connection.schema.hasTable(table(path));
                         if (!exists) {
-                            await connection.schema.createTable(table(path),t=>{
-                                if(dialect==='mysql2')t.engine('InnoDB');t.string('_dem_row',36).primary();t.specificType('_dem_fields',bytes).notNullable();
-                                for(const a of snapshot.entities[path].attributes)t.specificType(column(a.name),storageType(a));
-                            });createdTables.push(table(path));
+                            if (sameModel) fail('UNSUPPORTED','Existing portable entity store is incomplete.');
+                            plans.push({path,create:true});
                         } else {
                             if (!models.some(m=>m.entities[path])) fail('UNSUPPORTED','Existing entity store has no owned schema history.');
                             const info=await columns(connection,table(path));
                             if (!info.some(c=>c.name==='_dem_row') || !info.some(c=>c.name==='_dem_fields' && c.type===bytes)) fail('UNSUPPORTED','Existing entity layout is incompatible.');
+                            const additions=[];
                             for (const a of snapshot.entities[path].attributes) {
                                 const found=info.find(c=>c.name===column(a.name));
                                 if (found && found.type!==storageType(a)) fail('UNSUPPORTED','Physical type change requires explicit migration.');
+                                if (sameModel && !found) fail('UNSUPPORTED','Existing portable entity store is incomplete.');
                                 for (const old of models.flatMap(m=>m.entities[path]?.attributes ?? [])) if (old.name!==a.name && column(old.name)===column(a.name)) fail('UNSUPPORTED','Physical attribute name collision.');
-                                if (!found) {await connection.schema.alterTable(table(path),t=>t.specificType(column(a.name),storageType(a)));addedColumns.push({table:table(path),column:column(a.name)});}
+                                if (!found) additions.push(a);
                             }
+                            plans.push({path,additions});
+                        }
+                    }
+                    for (const plan of plans) {
+                        if (plan.create) {
+                            await connection.schema.createTable(table(plan.path),t=>{
+                                if(dialect==='mysql2')t.engine('InnoDB');t.string('_dem_row',36).primary();t.specificType('_dem_fields',bytes).notNullable();
+                                for(const a of snapshot.entities[plan.path].attributes)t.specificType(column(a.name),storageType(a));
+                            });createdTables.push(table(plan.path));
+                        } else for (const attribute of plan.additions) {
+                            await connection.schema.alterTable(table(plan.path),t=>t.specificType(column(attribute.name),storageType(attribute)));
+                            addedColumns.push({table:table(plan.path),column:column(attribute.name)});
                         }
                     }
                 };

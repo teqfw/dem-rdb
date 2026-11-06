@@ -1,12 +1,12 @@
 // @ts-check
 /**
  * @namespace TeqFw_Dem_RDb_Api_Configuration
- * @description Host-supplied model and connection.
+ * @description Host-selected model and runtime options.
  */
 export default class Configuration {
     /**
- * @param {object} deps
- * @param {any} deps.errors
+     * @param {object} deps
+     * @param {any} deps.errors
      */
     constructor({errors}) {
         /**

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
 import knex from 'knex';
+import Connection from '../../src/Connection.mjs';
 import {register} from '@teqfw/dem/conformance';
 import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 import {createHash,randomBytes} from 'node:crypto';
@@ -10,7 +11,9 @@ const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW
 if (Object.values(connection).some(value => !value)) throw new Error('MariaDB test connection environment is incomplete.');
 const table = path => 'dem_' + createHash('sha256').update(path).digest('hex').slice(0,32);
 async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberStrings:true}}) {
-    const db = knex({client:'mysql2',connection:{...connection,...driverOptions},pool:{min:0,max:4}});
+    const ownedConnection=new Connection({knexFactory:knex});
+    await ownedConnection.init({client:'mysql2',connection:{...connection,...driverOptions},pool:{min:0,max:4}});
+    const db=ownedConnection.getClient();
     try {
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
@@ -20,16 +23,16 @@ async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberS
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         for (const path of Object.keys(model.entities)) if (await db.schema.hasTable(table(path))) throw new Error('A test table already exists; refusing to modify it.');
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        const provider = await adapter.open({model,knex:db});
+        const provider = await adapter.open({model,connection:ownedConnection});
         await provider.createSchema();
         return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{
             try {
                 for (const [path,entity] of Object.entries(model.entities)) for (const [index,relation] of Object.values(entity.relations).entries())
                     await db.schema.alterTable(table(path), t=>t.dropForeign(relation.attributes,`${table(path)}_f_${index}`));
                 for (const path of Object.keys(model.entities).reverse()) await db.schema.dropTable(table(path));
-            } finally { await db.destroy(); }
+            } finally { await ownedConnection.disconnect(); }
         }};
-    } catch (error) { await db.destroy(); throw error; }
+    } catch (error) { await ownedConnection.disconnect(); throw error; }
 }
 register({test,assert,open});
 
@@ -107,7 +110,9 @@ test('a failed schema creation removes tables created by the attempt', async () 
     const suffix = randomBytes(8).toString('hex');
     const first = `/cleanup${suffix}/a`, second = `/cleanup${suffix}/b`;
     const schema = {$format:2,$namespace:`/cleanup${suffix}/`,a:{attributes:[{name:'name',type:{name:'text'}}]},b:{attributes:[{name:'name',type:{name:'text'}}]}};
-    const db = knex({client:'mysql2',connection:{...connection,supportBigNumbers:true,bigNumberStrings:true},pool:{min:0,max:1}});
+    const ownedConnection=new Connection({knexFactory:knex});
+    await ownedConnection.init({client:'mysql2',connection:{...connection,supportBigNumbers:true,bigNumberStrings:true},pool:{min:0,max:1}});
+    const db=ownedConnection.getClient();
     try {
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
         const c = new Container();
@@ -116,11 +121,11 @@ test('a failed schema creation removes tables created by the attempt', async () 
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
-        const provider = await (await c.get('TeqFw_Dem_RDb_Adapter$')).open({model,knex:db});
+        const provider = await (await c.get('TeqFw_Dem_RDb_Adapter$')).open({model,connection:ownedConnection});
         db.on('query', query => { if (/^create table/i.test(query.sql) && query.sql.includes(table(second))) throw new Error('Injected DDL failure'); });
         await assert.rejects(provider.createSchema(),{code:'STORAGE'});
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
-    } finally { await db.destroy(); }
+    } finally { await ownedConnection.disconnect(); }
 });
 
 

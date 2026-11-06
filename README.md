@@ -1,8 +1,6 @@
 # @teqfw/dem-rdb
 
-**Target transition:** The namespace identifiers in this document describe the accepted target. The current implementation and package metadata still use the former prefix; align them before using these examples. No compatibility alias is intended.
-
-Relational persistence for `@teqfw/dem`. The host selects declarations and compiles an Effective DEM, chooses the database and supplies a Knex SQLite, PostgreSQL or MariaDB connection. It initializes the schema explicitly and selects the provider through TeqFW DI. Independent providers may use different models and databases, even when entity paths overlap; path lookup does not route between them.
+Relational persistence for `@teqfw/dem`. The host selects declarations and compiles an Effective DEM, configures database connections through `@teqfw/cfg`, and selects Connections and Providers through TeqFW DI. DEM-RDB constructs and destroys its Knex clients. Independent Providers can use different models and storage families while sharing one Connection; entity paths do not route between them.
 
 Use the portable projection for universal DEM Core persistence. The native projection is also available within its separate capability and physical storage bounds.
 
@@ -12,16 +10,18 @@ contract. Host maps are separate and continue to use Format 1.
 
 ## Portable relational projection
 
-Register `TeqFw_Dem_RDb_` to this package's `src/` and `TeqFw_Dem_` to DEM's
-`src/`. Select the portable layout explicitly. The host installs the SQLite
-driver and creates a Knex connection, then opens the adapter with its compiled model:
+Register `TeqFw_Dem_RDb_` to this package's `src/`, `TeqFw_Cfg_` to CFG and
+`TeqFw_Dem_` to DEM. Load the shared CFG snapshot before selecting a named
+connection. The host installs the SQLite driver; the DEM-RDB Connection creates
+and owns the Knex client:
 
 ```js
-const db = knex({client: 'sqlite3', connection: {filename: 'app.sqlite'},
-    useNullAsDefault: true, pool: {min: 1, max: 1}});
+const config = await container.get('TeqFw_Dem_RDb_Config$');
+const connection = await container.get('TeqFw_Dem_RDb_Connection$');
+await connection.init(config.get());
 const adapter = await container.get('TeqFw_Dem_RDb_Adapter$');
 const backend = await adapter.open({
-    model: compilation.model, knex: db, projection: 'portable',
+    model: compilation.model, connection, projection: 'portable',
     name: 'application', enforceRelations: true,
     // runtime: hostRuntime, // optional for Core-only models
 });
@@ -31,8 +31,18 @@ const {results} = await backend.execute({operations: [
     {path: '/app/user', method: 'list', params: {selection: {}}},
 ]});
 const {schemas} = await backend.getSchemaHistory();
-await backend.close(); // Invalidates this backend; the host still owns db.destroy().
+await backend.close(); // Invalidates repositories; the shared Connection remains open.
+await connection.disconnect();
 ```
+
+`Config.get()` reads the `TEQFW_DEM_RDB` CFG fragment and returns a cached,
+deeply frozen Knex configuration. Default settings use keys such as
+`TEQFW_DEM_RDB__CLIENT`, `__FILENAME` and `__EXTRA`; named `main` settings use
+`TEQFW_DEM_RDB__MAIN_CLIENT`, `__MAIN_FILENAME` and `__MAIN_EXTRA`. Names ignore
+case and normalize hyphens to underscores. Named settings do not inherit default
+values. `EXTRA` accepts a JSON object with advanced Knex options; explicit standard
+fields override matching `EXTRA.connection` values. `PORT` is converted to an
+integer, `USE_NULL_AS_DEFAULT` to a boolean and `SEARCH_PATH` to a string array.
 
 Portable mode retains an entity table and a column for each attribute. Hashed
 physical identifiers avoid logical name length limits. Private UUID row keys and
@@ -49,8 +59,10 @@ memory; native index throughput is not promised. Engine quotas and physical obje
 limits still apply. SQLite requires a single connection. MariaDB portable tables
 require InnoDB and strict SQL mode.
 
-createSchema is idempotent for an unchanged model. Changes record complete versioned
-model snapshots, add columns/tables and retain removed physical data. Defaults and
+Normal `createSchema()` creates a new scope or validates an existing scope against
+the same canonical model. A different model is rejected before storage changes.
+Structural changes require the explicit `createSchema({publish: true})` option;
+publication records complete versioned model snapshots, adds columns/tables and retains removed physical data. Defaults and
 nullable additions project on read. Newly declared constraints do not audit historical
 data at schema publication. A backend already bound to an older version and its
 acquired repositories reject, including when attempting to publish a schema; reopen
@@ -77,8 +89,8 @@ data transaction; any failure rolls back. Results use existing DEM envelopes and
 become observable after commit. Dependent keys must be explicit. Callback transaction
 APIs and schema commands are excluded. Map both RepositoryProvider and the optional
 `TeqFw_Dem_Api_RepositoryBatch$` token to `TeqFw_Dem_RDb_Provider$` in host DI. Its
-configuration can return projection, name, enforceRelations and an optional bound
-Runtime with model and knex.
+configuration returns model, projection, name, enforceRelations and an optional
+bound Runtime. The Provider receives its selected Connection through DI.
 Portable relations are checked by default; `enforceRelations: false` selects
 descriptive relations, which do not provide strict DEM relation conformance. Native
 mode requires checked relations.
@@ -89,7 +101,7 @@ PostgreSQL and MariaDB run only when configured. A SQLite result does not establ
 conformance for either optional engine. The comparison suite exercises selected
 native and portable workloads against real browser IDB.
 
-For DI substitution, the host maps `TeqFw_Dem_Api_RepositoryProvider$` to `TeqFw_Dem_RDb_Provider$` with a DI preprocessor, and maps `TeqFw_Dem_RDb_Api_Configuration$` to a host component whose asynchronous `get()` returns `{model, knex, projection: 'portable'}`. The provider opens lazily on first use and caches its configuration. The host initializes the schema separately through `Adapter.open` before using repositories. The default configuration raises `UNSUPPORTED` until the host supplies one.
+For DI substitution, the host routes DEM RepositoryProvider and RepositoryBatch requests to selected Provider wrappers, then routes each Provider's generic Configuration and Connection dependencies by effective DI provenance. `TeqFw_Dem_RDb_Config$` reads named options from the shared CFG snapshot. The Provider opens lazily on first use and caches its backend. The host initializes the schema through `Adapter.open({model, connection, ...})` before resolving consumers. Config values use `TEQFW_DEM_RDB__CLIENT`, `__FILENAME`, and related keys for the default Connection; named `main` keys use `TEQFW_DEM_RDB__MAIN_CLIENT`, `__MAIN_FILENAME`, and related suffixes. Named configurations do not inherit default values.
 
 A version-matched consumer skill is included at `skills/teqfw-dem-rdb/`. Hosts may mount it into their agent skill discovery directory.
 
@@ -98,16 +110,17 @@ A version-matched consumer skill is included at `skills/teqfw-dem-rdb/`. Hosts m
 To select the native projection explicitly:
 
 ```js
-const db = knex({client: 'sqlite3', connection: {filename: 'app.sqlite'},
-    useNullAsDefault: true, pool: {min: 1, max: 1}});
+const config = await container.get('TeqFw_Dem_RDb_Config$');
+const connection = await container.get('TeqFw_Dem_RDb_Connection$');
+await connection.init(config.get());
 const adapter = await container.get('TeqFw_Dem_RDb_Adapter$');
-const provider = await adapter.open({model: compilation.model, knex: db, projection: 'native'});
+const provider = await adapter.open({model: compilation.model, connection, projection: 'native'});
 await provider.createSchema(); // Only for a new empty database.
 const users = await provider.get({path: '/app/user'});
 const {record} = await users.create({record: {name: 'Ada'}});
 ```
 
-The host integrates `provider.get` at its repository-provider composition boundary, and manages connection shutdown. `createSchema` refuses existing tables; it is transactional for SQLite and PostgreSQL. MariaDB DDL has different cleanup behavior described below. It is not a migration or rebuild tool. Foreign keys are enabled on the single SQLite connection.
+The host integrates `provider.get` at its repository-provider composition boundary and calls `connection.disconnect()` after Providers close. `createSchema` refuses existing tables; it is transactional for SQLite and PostgreSQL. MariaDB DDL has different cleanup behavior described below. It is not a migration or rebuild tool. Foreign keys are enabled on the single SQLite connection.
 
 Within the native projection, supported Core DEM logical value types include: integer identity/ref, UUID identity/ref, signed/unsigned ordinary integers through 64 bits, exact decimal, boolean, string, text, UUID, enum, date, datetime, binary, JSON and dense/bit/sparse vectors. UUID identities are generated in JavaScript. Integer identity/ref values now use native 64-bit storage; ordinary wide integers use exact string driver results and are not converted through JavaScript Number. The host installs the database driver.
 
@@ -126,7 +139,7 @@ git clone git@github.com:flancer32/teqfw-dem-rdb-ctx.git ctx
 adsm-ctx validate .
 ```
 
-For native PostgreSQL use `knex({client: 'pg', connection, searchPath: ['application_schema']})`; the target schema must already exist and must be first in the search path. Host callers install `pg`. PostgreSQL generated integer identities are allocated inside the write transaction under a transaction-scoped advisory lock; explicit values and concurrent adapter writes participate in the same lock. The supported physical identity range is 1–9223372036854775807. PostgreSQL physical table, unique-key and index names use deterministic SHA-256-derived identifiers; attribute names exceeding PostgreSQL’s 63-byte identifier limit are rejected before effects. PostgreSQL and SQLite use logical normalization supplied by DEM.
+For native PostgreSQL configure `TEQFW_DEM_RDB__CLIENT=pg`, connection fields such as `__HOST` and `__DATABASE`, and `__SEARCH_PATH=application_schema`; the target schema must already exist and must be first in the search path. Host callers install `pg`. PostgreSQL generated integer identities are allocated inside the write transaction under a transaction-scoped advisory lock; explicit values and concurrent adapter writes participate in the same lock. The supported physical identity range is 1–9223372036854775807. PostgreSQL physical table, unique-key and index names use deterministic SHA-256-derived identifiers; attribute names exceeding PostgreSQL’s 63-byte identifier limit are rejected before effects. PostgreSQL and SQLite use logical normalization supplied by DEM.
 
 The opt-in PostgreSQL suite uses `TEQFW_DB__PG_HOST`, `TEQFW_DB__PG_USER`, `TEQFW_DB__PG_PASSWORD`, and `TEQFW_DB__PG_DATABASE`, and runs with `npm run test:postgresql`. It creates isolated temporary test schemas and removes them; the supplied database role needs schema creation privileges.
 
@@ -203,9 +216,9 @@ DEM-IDB HTTP/Chrome harness in application-only mode and compares both observati
 For browser-only execution, run `DEM_BROWSER_SCENARIO=application npm run test:browser`
 in DEM-IDB; set DEM_COMPARE_OUTPUT to retain its JSON observation envelope.
 
-Each root registers DEM, its adapter, Demo_ and Host_ namespaces before resolution.
-Its preprocessor selects the concrete provider and a host-owned configuration
-component; the root initializes that component before resolving Workflow. No DI test
+Each root registers CFG, DEM, its adapter, Demo_ and Host_ namespaces before resolution.
+Its preprocessor selects the concrete Provider and a host model configuration
+component; the root loads CFG and initializes the Connection and placement before resolving Workflow. No DI test
 mode or repository fake is used. The Node root owns a temporary SQLite file; the
 browser root owns an isolated database. Both clean up their resources in finally.
 
