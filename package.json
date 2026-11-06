@@ -18,7 +18,7 @@
   "scripts": {
     "test": "npm run check:esm && find test/unit test/integration.test.mjs test/portable/Runtime.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
     "verify": "npm test && npm run typecheck",
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p jsconfig.json",
     "test:postgresql": "node --test test/optin/Postgresql.test.mjs",
     "test:mariadb": "node --test test/optin/Mariadb.test.mjs",
     "test:compare": "node --test test/compare/Values.test.mjs",
