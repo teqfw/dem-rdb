@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {register} from '@teqfw/dem/conformance';
 import {schema,map,exercise,atomicSchema,exerciseAtomic,extendedSchema,exerciseExtended,exerciseEvolution,evolutionSchemas} from '@teqfw/dem/conformance/values';
-import {harness,enabled} from './Harness.mjs';
+import {harness,enabled,portableClient} from './Harness.mjs';
 
-for(const client of ['sqlite3','pg','mysql2']) {
-    if(!enabled(client)) {test(client+' portable integration',{skip:'Test connection environment is not configured'},()=>{});continue;}
+const requiredClient=portableClient;
+if(requiredClient && !['sqlite3','pg','mysql2'].includes(requiredClient)) throw new Error('Unknown required portable test client.');
+if(requiredClient && !enabled(requiredClient)) throw new Error('Required portable test connection environment is incomplete.');
+for(const client of requiredClient ? [requiredClient] : ['sqlite3']) {
     const open=async params=>{
         const h=await harness(client);
         try {const env=await h.open(params);await env.provider.createSchema();return env;}
@@ -40,6 +42,31 @@ for(const client of ['sqlite3','pg','mysql2']) {
             assert.equal((await (await first.provider.get({path:'/evolution/item'})).list({selection:{}})).records[0].name,'before');
             assert.equal((await next.provider.createSchema({publish:true})).version,2);
         } finally {if(listener)h.db.removeListener('query',listener);await h.close();}
+    });
+    if(client==='pg') test(client+' portable connection reopen restores committed data and rolled back allocation',async()=>{
+        const h=await harness(client);
+        try {
+            const document={$format:2,$namespace:'/reopen/',item:{
+                attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'label',type:{name:'text'}}],
+                uniqueKeys:{label:['label']},
+            }};
+            const {provider,model}=await h.open({schema:document,map:undefined,handlers:undefined});
+            await provider.createSchema();
+            const repo=await provider.get({path:'/reopen/item'});
+            await repo.create({record:{label:'persisted'}});
+            await assert.rejects(provider.execute({operations:[
+                {path:'/reopen/item',method:'create',params:{record:{label:'duplicate'}}},
+                {path:'/reopen/item',method:'create',params:{record:{label:'duplicate'}}},
+            ]}),{code:'CONFLICT'});
+            const previous=h.connection;
+            await h.reconnect();
+            assert.throws(()=>previous.getClient());
+            const reopened=await h.attach({model,runtime:undefined});
+            assert.deepEqual(await reopened.createSchema(),{version:1});
+            const restored=await reopened.get({path:'/reopen/item'});
+            assert.deepEqual((await restored.list({selection:{}})).records,[{id:'1',label:'persisted'}]);
+            assert.deepEqual(await restored.create({record:{label:'next'}}),{record:{id:'2',label:'next'}});
+        } finally {await h.close();}
     });
     test(client+' portable descriptive relation profile accepts missing targets',async()=>{
         const env=await open({schema:atomicSchema,enforceRelations:false});

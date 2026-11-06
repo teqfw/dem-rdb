@@ -17,3 +17,32 @@ jobs:
           node-version: 22
       - run: npm install
       - run: npm run verify
+  portable-postgresql:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: dem_test
+          POSTGRES_PASSWORD: dem_test
+          POSTGRES_DB: dem_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dem_test -d dem_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEQFW_DB__PG_HOST: 127.0.0.1
+      TEQFW_DB__PG_PORT: 5432
+      TEQFW_DB__PG_USER: dem_test
+      TEQFW_DB__PG_PASSWORD: dem_test
+      TEQFW_DB__PG_DATABASE: dem_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run test:portable:postgresql

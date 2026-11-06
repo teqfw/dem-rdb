@@ -95,16 +95,25 @@ Portable relations are checked by default; `enforceRelations: false` selects
 descriptive relations, which do not provide strict DEM relation conformance. Native
 mode requires checked relations.
 
-Run `npm run test:portable` for portable values, atomic commands, long and structured
-keys, structural history and failed schema publication. SQLite is mandatory;
-PostgreSQL and MariaDB adapter suites run only when configured. PDE Gate targets
-the same logical model and repository/batch contracts on SQLite and PostgreSQL;
-Gate must verify its own authority workflows on both. Adapter support or a skipped
-PostgreSQL suite does not establish verified Gate behavior on PostgreSQL. Gate
-deployment must ensure a single instance per database; batch atomicity does not
-serialize authority operations across instances. A SQLite result does not establish
-conformance for either optional engine. The comparison suite exercises selected
+Run `npm run test:portable` for SQLite portable conformance, values, atomic
+commands, structural history and failed publication. `npm run test:portable:postgresql` runs the portable suite against PostgreSQL and fails
+when configuration is missing, the server is unavailable or any test is skipped.
+CI provisions PostgreSQL and requires this separate job. The suite verifies Core
+values, repositories, batches, relations, schema publication and restoration
+after a connection restart. This is bounded adapter evidence, not verification of
+PDE Gate integration or production durability. Gate must test its own authority
+workflows on both engines and ensure one instance per database; batch atomicity
+does not serialize authority operations across instances. MariaDB and native
+projection verification remain separate. The comparison suite exercises selected
 native and portable workloads against real browser IDB.
+
+For PostgreSQL portable tests, set `TEQFW_DB__PG_HOST`, `__PG_PORT` (optional),
+`__PG_USER`, `__PG_PASSWORD` and `__PG_DATABASE` using full `TEQFW_DB` keys in
+`.env` or the process environment. CFG loads `.env` first and the environment
+second. The role must be able to create schemas: each test creates a fresh random
+schema, verifies it is active, and removes only that schema. Use a disposable test
+database and keep credentials out of Git. `TEQFW_PORTABLE__CLIENT=pg` also selects
+PostgreSQL for `npm run test:portable`; `mysql2` selects MariaDB.
 
 For DI substitution, the host routes DEM RepositoryProvider and RepositoryBatch requests to selected Provider wrappers, then routes each Provider's generic Configuration and Connection dependencies by effective DI provenance. `TeqFw_Dem_RDb_Config$` reads named options from the shared CFG snapshot. The Provider opens lazily on first use and caches its backend. The host initializes the schema through `Adapter.open({model, connection, ...})` before resolving consumers. Config values use `TEQFW_DEM_RDB__CLIENT`, `__FILENAME`, and related keys for the default Connection; named `main` keys use `TEQFW_DEM_RDB__MAIN_CLIENT`, `__MAIN_FILENAME`, and related suffixes. Named configurations do not inherit default values.
 
