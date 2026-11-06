@@ -59,7 +59,10 @@ test('real backend transcripts match browser IndexedDB across projections and li
         }
         await t.test(client+' portable evolution',async()=>{
             const h=await harness(client);
-            try {assert.deepEqual(await exerciseEvolution({assert,open:async document=>(await h.open({schema:document})).provider}),browser.evolutionTranscript);}
+            try {assert.deepEqual(await exerciseEvolution({assert,open:async document=>{
+                const provider=(await h.open({schema:document})).provider;
+                return {...provider,createSchema:options=>provider.createSchema(options ?? {publish:true})};
+            }}),browser.evolutionTranscript);}
             finally {await h.close();}
         });
     }

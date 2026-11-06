@@ -104,6 +104,7 @@ test('CFG, real DI routing and independent Providers share owned Connections saf
     const transientA=await c.get('TeqFw_Dem_RDb_Connection$$'),transientB=await c.get('TeqFw_Dem_RDb_Connection$$');
     const initializationBackends=[];
     let consumerA,consumerB;
+    let primaryError,primaryFailed=false;
     try {
     await main.init(config.get('main'));
     await other.init(config.get('other'));
@@ -129,8 +130,12 @@ test('CFG, real DI routing and independent Providers share owned Connections saf
         const backend=await adapter.open({...options,connection:main});
         const acquired={backend,closed:false};
         initializationBackends.push(acquired);
-        try { await backend.createSchema(); }
-        finally { try { await backend.close(); } finally { acquired.closed=true; } }
+        let schemaError,closeError,schemaFailed=false,closeFailed=false;
+        try { await backend.createSchema(); } catch(error) { schemaFailed=true; schemaError=error; }
+        try { await backend.close(); acquired.closed=true; } catch(error) { closeFailed=true; closeError=error; }
+        if(schemaFailed && closeFailed)throw new AggregateError([schemaError,closeError],'Schema initialization and backend close failed.',{cause:schemaError});
+        if(schemaFailed)throw schemaError;
+        if(closeFailed)throw closeError;
     }
     bootstrap.push('schemas-ready');
     const bootstrapClientAccesses=main.getClientCalls();
@@ -159,13 +164,21 @@ test('CFG, real DI routing and independent Providers share owned Connections saf
         await assert.rejects(repoA.list({selection:{}}),{code:'STORAGE'});
         assert.deepEqual((await (await consumerB.provider.get({path:'/same/item'})).list({selection:{}})).records,[{count:'7'}]);
         assert.equal(main.getClient().client.config.client,'sqlite3');
+    } catch(error) {
+        primaryFailed=true;
+        primaryError=error;
     } finally {
-        const cleanup=[consumerA?.provider?.close(),consumerB?.provider?.close(),...initializationBackends.filter(item=>!item.closed).map(item=>item.backend.close()),
-            main.disconnect(),other.disconnect(),fallback.disconnect(),transientA.disconnect(),transientB.disconnect()].filter(Boolean);
-        const results=await Promise.allSettled(cleanup);
-        const failures=results.filter(result=>result.status==='rejected').map(result=>result.reason);
-        if(failures.length)throw new AggregateError(failures,'Fixture bootstrap cleanup failed.');
+        const failures=[];
+        const close=async(label,operation)=>{try {await operation();} catch(error) {failures.push(new Error(`${label} failed during fixture cleanup.`,{cause:error}));}};
+        for(const [label,provider] of [['Provider A',consumerA?.provider],['Provider B',consumerB?.provider]])if(provider)await close(label,()=>provider.close());
+        for(const [index,item] of initializationBackends.entries())if(!item.closed)await close(`Initialization backend ${index+1}`,()=>item.backend.close());
+        for(const [label,connection] of [['main Connection',main],['other Connection',other],['fallback Connection',fallback],['transient Connection A',transientA],['transient Connection B',transientB]])await close(label,()=>connection.disconnect());
+        if(failures.length) {
+            if(primaryFailed)throw new AggregateError([primaryError,...failures],'Fixture failed and one or more cleanup operations failed.',{cause:primaryError});
+            throw new AggregateError(failures,'Fixture bootstrap cleanup failed.');
+        }
     }
+    if(primaryFailed)throw primaryError;
 });
 
 test('DI routing rejects an unmatched repository consumer',async()=>{
