@@ -44,14 +44,18 @@ values. `EXTRA` accepts a JSON object with advanced Knex options; explicit stand
 fields override matching `EXTRA.connection` values. `PORT` is converted to an
 integer, `USE_NULL_AS_DEFAULT` to a boolean and `SEARCH_PATH` to a string array.
 
-Portable mode retains an entity table and a column for each attribute. Hashed
-physical identifiers avoid logical name length limits. Private UUID row keys and
+Portable mode uses the complete entity namespace as its table name: `/pde/gate/account`
+becomes `pde_gate_account`. Attribute names are preserved exactly. Namespace segments
+must not contain underscores, internal `_dem_row` and `_dem_fields` attributes are
+reserved, and physical identifiers longer than 63 bytes are rejected. Storage family
+metadata uses `_dem_<name>_state` and `_dem_<name>_history`. Private UUID row keys and
 software uniqueness/relation checks avoid native logical index-width bounds. Exact
 persistent counters and textual identity/ref values support identities beyond native
 64-bit ranges. Textual scalars use reversible JSON encoding, including NUL; ordinary
 values retain native numeric/blob storage where lossless. A field-presence inventory
-distinguishes absent historical fields from explicit null. Name selects an isolated
-physical family; it must remain stable when reopening the same data.
+distinguishes absent historical fields from explicit null. Name selects metadata for a physical family and must remain stable when reopening.
+Different names do not isolate overlapping entity tables: use separate database
+namespaces for overlapping models; initialization rejects an unowned table.
 
 Operations lock scope metadata and evaluate a logical snapshot with shared DEM
 semantics. This conservatively serializes operations and can consume substantial

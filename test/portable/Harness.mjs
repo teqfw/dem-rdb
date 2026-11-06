@@ -1,4 +1,4 @@
-import {createHash,randomBytes} from 'node:crypto';
+import {randomBytes} from 'node:crypto';
 import Container from '@teqfw/di';
 import {resolve} from 'node:path';
 import {existsSync} from 'node:fs';
@@ -25,7 +25,7 @@ export const connection=client=>{
 };
 export const enabled=client=>client==='sqlite3' || Object.values(connection(client)).every(Boolean);
 export async function harness(client,{definitions=[]}={}) {
-    const name='portable_'+randomBytes(8).toString('hex'),prefix='dem_p_'+createHash('sha256').update(name).digest('hex').slice(0,12);
+    const name='portable_'+randomBytes(8).toString('hex'),prefix='_dem_'+name;
     const schema='dem_portable_'+randomBytes(8).toString('hex');
     const dbConfig={client,connection:client==='sqlite3' ? {filename:':memory:'} : connection(client),searchPath:client==='pg' ? [schema] : undefined,useNullAsDefault:true,pool:{min:0,max:client==='sqlite3' ? 1 : 4}};
     let ownedConnection=new Connection({knexFactory:knex});
@@ -37,6 +37,7 @@ export async function harness(client,{definitions=[]}={}) {
     /** @type {any[]} */
     const providers=[];
     let owned=false;
+    const ownedTables=new Set([prefix+'_state',prefix+'_history']);
     try {
         if (client==='pg') {
             await db.raw('CREATE SCHEMA ??',[schema]);
@@ -45,8 +46,8 @@ export async function harness(client,{definitions=[]}={}) {
             if(result.rows[0].name!==schema)throw new Error('Portable test schema is not the active schema.');
         }
         if (client==='mysql2') {
-            const [rows]=await db.raw('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LEFT(TABLE_NAME,?)=?',[prefix.length,prefix]);
-            if(rows.length)throw new Error('Portable test scope already exists; refusing to modify it.');owned=true;
+            const [rows]=await db.raw('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE()');
+            if(rows.length)throw new Error('MariaDB portable tests require an empty dedicated database.');owned=true;
         }
         const registry=await c.get('TeqFw_Dem_Registry$');
         if(definitions.length)registry.register(definitions);
@@ -58,13 +59,13 @@ export async function harness(client,{definitions=[]}={}) {
                 for(const provider of providers)await provider.close();
                 if(owned && client==='pg')await db.raw('DROP SCHEMA ?? CASCADE',[schema]);
                 if(owned && client==='mysql2') {
-                    const [rows]=await db.raw('SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND LEFT(TABLE_NAME,?)=?',[prefix.length,prefix]);
-                    for(const row of rows)await db.schema.dropTable(row.name);
+                    for(const table of ownedTables)await db.schema.dropTableIfExists(table);
                 }
             } finally {await ownedConnection.disconnect();}
         };
         const open=async({schema:document,map,enforceRelations=true,runtime:useRuntime=false,handlers,name:storageName=name})=>{
             const {model}=await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
+            if (client==='mysql2') for (const path of Object.keys(model.entities)) ownedTables.add(path.slice(1).replaceAll('/','_'));
             const binding=useRuntime ? runtime.bind({model,registry,...(handlers ? {handlers} : {})}) : undefined;
             const provider=await adapter.open({model,connection:ownedConnection,projection:'portable',name:storageName,enforceRelations,...(binding ? {runtime:binding} : {})});providers.push(provider);
             return {provider,model,selection,close};

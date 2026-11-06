@@ -10,10 +10,9 @@ export default class Portable {
      * @param {any} deps.batch
      * @param {any} deps.normalize
      * @param {any} deps.errors
-     * @param {typeof import('node:crypto').createHash} deps.createHash
      * @param {typeof import('node:crypto').randomUUID} deps.randomUUID
      */
-    constructor({codec,batch,normalize,errors,createHash,randomUUID}) {
+    constructor({codec,batch,normalize,errors,randomUUID}) {
         /** @param {string} code @param {string} message @returns {any} */
         const fail=function (code,message) {throw errors.create({code,message});};
         /** @param {any} error @returns {any} */
@@ -41,13 +40,24 @@ export default class Portable {
             const norm=runtime?.normalize ?? normalize,batchExec=runtime?.batch;
             if (dialect==='sqlite3' && knex.client.config.pool?.max!==1) fail('UNSUPPORTED','SQLite requires a single connection pool.');
             const snapshot=JSON.parse(JSON.stringify(model)),identity=canonical(snapshot),paths=Object.keys(snapshot.entities);
+            // One common identifier limit keeps the portable layout valid on all supported engines.
             /** @param {string} value @returns {string} */
-            const hash=value=>createHash('sha256').update(value).digest('hex');
-            const prefix='dem_p_'+hash(name).slice(0,12),meta=prefix+'_state',history=prefix+'_history';
+            const identifier=function (value) {
+                if (Buffer.byteLength(value,'utf8')>63) fail('UNSUPPORTED','Physical identifier exceeds 63 bytes.');
+                return value;
+            };
+            if (!/^[a-z][a-z0-9_]*$/.test(name)) fail('UNSUPPORTED','Invalid portable storage family name.');
+            const meta=identifier('_dem_'+name+'_state'),history=identifier('_dem_'+name+'_history');
             /** @param {string} path @returns {string} */
-            const table=path=>prefix+'_'+hash(path).slice(0,24);
+            const table=function (path) {
+                if (!/^\/[a-z][a-z0-9]*(?:\/[a-z][a-z0-9]*)*$/.test(path)) fail('UNSUPPORTED','Invalid or ambiguous entity namespace.');
+                return identifier(path.slice(1).replaceAll('/','_'));
+            };
             /** @param {string} attribute @returns {string} */
-            const column=attribute=>'a_'+hash(attribute).slice(0,32);
+            const column=function (attribute) {
+                if (typeof attribute!=='string' || !/^[a-z0-9_]+$/.test(attribute) || ['_dem_row','_dem_fields'].includes(attribute)) fail('UNSUPPORTED','Invalid or reserved attribute name.');
+                return identifier(attribute);
+            };
             const bytes=dialect==='pg' ? 'bytea' : dialect==='mysql2' ? 'longblob' : 'blob';
             let closed=false,boundVersion;
             const physicalNames=new Set();
@@ -102,8 +112,8 @@ export default class Portable {
             };
             /** @param {any} connection @param {string} path @returns {any} */
             const projection=function (connection,path) {
-                return ['_dem_row','_dem_fields',...snapshot.entities[path].attributes.map(a=>codec.numeric(a) || a.type.name==='decimal' && !['text','longblob'].includes(storageType(a))
-                    ? connection.raw('CAST(?? AS '+(dialect==='mysql2' ? 'CHAR' : 'TEXT')+') AS ??',[column(a.name),column(a.name)]) : column(a.name))];
+                return ['_dem_row','_dem_fields',...snapshot.entities[path].attributes.map((a,index)=>codec.numeric(a) || a.type.name==='decimal' && !['text','longblob'].includes(storageType(a))
+                    ? connection.raw('CAST(?? AS '+(dialect==='mysql2' ? 'CHAR' : 'TEXT')+') AS ??',[column(a.name),'_dem_value_'+index]) : connection.raw('?? AS ??',[column(a.name),'_dem_value_'+index]))];
             };
             /** @param {string} path @param {any} row @returns {any} */
             const logical=function (path,row) {
@@ -112,7 +122,7 @@ export default class Portable {
                     if (!Array.isArray(fields) || fields.some(name=>typeof name!=='string')) throw new Error('Invalid field inventory');
                     const present=entity.attributes.filter(a=>fields.includes(a.name));
                     const partial={...entity,attributes:present};
-                    const stored=Object.fromEntries(present.map(a=>[a.name,row[column(a.name)]]));
+                    const stored=Object.fromEntries(present.map(a=>[a.name,row['_dem_value_'+entity.attributes.indexOf(a)]]));
                     const record=codec.decode(partial,stored,true);
                     return norm.record({entity,record:norm.record({entity,record,mode:'create'}),mode:'complete'});
                 } catch (error) {throw errors.create({code:'STORAGE',message:'Stored values require explicit migration to the selected model.'});}
@@ -261,4 +271,4 @@ export default class Portable {
         };
     }
 }
-export const __deps__=Object.freeze({default:Object.freeze({codec:'TeqFw_Dem_RDb_Codec$',batch:'TeqFw_Dem_Repository_Batch$',normalize:'TeqFw_Dem_Repository_Normalize$',errors:'TeqFw_Dem_Repository_Error$',createHash:'node:crypto__createHash',randomUUID:'node:crypto__randomUUID'})});
+export const __deps__=Object.freeze({default:Object.freeze({codec:'TeqFw_Dem_RDb_Codec$',batch:'TeqFw_Dem_Repository_Batch$',normalize:'TeqFw_Dem_Repository_Normalize$',errors:'TeqFw_Dem_Repository_Error$',randomUUID:'node:crypto__randomUUID'})});

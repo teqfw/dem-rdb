@@ -118,7 +118,7 @@ test('CFG, real DI routing and independent Providers share owned Connections saf
     const registry=await c.get('TeqFw_Dem_Registry$');registry.finalize();
     const compiler=await c.get('TeqFw_Dem_Compile$');
     const modelA=(await compiler.exec({schemas:[{packageName:'fixture',filename:'a.json',document:{$format:2,$namespace:'/same/',item:{attributes:[{name:'name',type:{name:'text'}}]}}}]})).model;
-    const modelB=(await compiler.exec({schemas:[{packageName:'fixture',filename:'b.json',document:{$format:2,$namespace:'/same/',item:{attributes:[{name:'count',type:{name:'integer'}}]}}}]})).model;
+    const modelB=(await compiler.exec({schemas:[{packageName:'fixture',filename:'b.json',document:{$format:2,$namespace:'/other/',item:{attributes:[{name:'count',type:{name:'integer'}}]}}}]})).model;
     const runtimeFactory=await c.get('TeqFw_Dem_Repository_Runtime$');
     const runtimeA=runtimeFactory.bind({model:modelA,registry}),runtimeB=runtimeFactory.bind({model:modelB,registry});
     bootstrap.push('models-bound');
@@ -149,11 +149,11 @@ test('CFG, real DI routing and independent Providers share owned Connections saf
         const repoA=await consumerA.provider.get({path:'/same/item'});
         assert.equal(main.getClientCalls(),bootstrapClientAccesses+1);
         await repoA.create({record:{name:'Ada'}});
-        const batchB=await consumerB.batch.execute({operations:[{path:'/same/item',method:'create',params:{record:{count:7}}}]});
+        const batchB=await consumerB.batch.execute({operations:[{path:'/other/item',method:'create',params:{record:{count:7}}}]});
         assert.equal(main.getClientCalls(),bootstrapClientAccesses+2);
         assert.equal(batchB.results[0].record.count,'7');
         assert.deepEqual((await repoA.list({selection:{}})).records,[{name:'Ada'}]);
-        assert.deepEqual((await (await consumerB.provider.get({path:'/same/item'})).list({selection:{}})).records,[{count:'7'}]);
+        assert.deepEqual((await (await consumerB.provider.get({path:'/other/item'})).list({selection:{}})).records,[{count:'7'}]);
         assert.notEqual(initializationBackends[0].backend,initializationBackends[1].backend);
         const consumerOther=await c.get('Test_Dem_Consumer_Other$');
         assert.equal(consumerOther.connection,other);
@@ -162,7 +162,7 @@ test('CFG, real DI routing and independent Providers share owned Connections saf
         assert.notEqual(transientA.getClient(),transientB.getClient());
         await consumerA.provider.close();
         await assert.rejects(repoA.list({selection:{}}),{code:'STORAGE'});
-        assert.deepEqual((await (await consumerB.provider.get({path:'/same/item'})).list({selection:{}})).records,[{count:'7'}]);
+        assert.deepEqual((await (await consumerB.provider.get({path:'/other/item'})).list({selection:{}})).records,[{count:'7'}]);
         assert.equal(main.getClient().client.config.client,'sqlite3');
     } catch(error) {
         primaryFailed=true;

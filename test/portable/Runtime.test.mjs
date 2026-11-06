@@ -1,6 +1,5 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {createHash} from 'node:crypto';
 import {register} from '@teqfw/dem/conformance';
 import {schema,map,exercise,atomicSchema,exerciseAtomic,extendedSchema,exerciseExtended,exerciseEvolution,evolutionSchemas} from '@teqfw/dem/conformance/values';
 import {harness,enabled,portableClient} from './Harness.mjs';
@@ -21,6 +20,23 @@ for(const client of requiredClient ? [requiredClient] : ['sqlite3']) {
             try {await run({provider:env.provider,assert});} finally {await env.close();}
         });
     }
+    test(client+' portable uses complete model paths and exact attribute names',async()=>{
+        const h=await harness(client);
+        try {
+            const names=['identity','account','office','access','credential','session','deskkey','deskroute'];
+            const document={$format:2,$namespace:'/pde/gate/'};
+            for (const name of names) document[name]={attributes:[{name:'id',type:{name:'text'}},{name:'account_id',type:{name:'text'}}]};
+            const {provider}=await h.open({schema:document});await provider.createSchema();
+            for (const name of names) {
+                const table='pde_gate_'+name;
+                assert.equal(await h.db.schema.hasTable(table),true);
+                const columns=await h.db(table).columnInfo();
+                assert.deepEqual(Object.keys(columns).sort(),['_dem_fields','_dem_row','account_id','id']);
+            }
+            assert.equal(await h.db.schema.hasTable('_dem_'+h.name+'_state'),true);
+            assert.equal(await h.db.schema.hasTable('_dem_'+h.name+'_history'),true);
+        } finally {await h.close();}
+    });
     test(client+' portable structural evolution and retained history',async()=>{
         const h=await harness(client);
         try {await exerciseEvolution({assert,open:async schema=>{
@@ -75,7 +91,7 @@ for(const client of requiredClient ? [requiredClient] : ['sqlite3']) {
     });
 }
 
-test('portable Runtime binding validates model identity and isolates overlapping Core paths',async()=>{
+test('portable Runtime binding validates model identity and rejects overlapping Core paths',async()=>{
     const h=await harness('sqlite3');
     try {
         const firstSchema={$format:2,$namespace:'/shared/',item:{attributes:[{name:'name',type:{name:'text'}}]}};
@@ -83,11 +99,11 @@ test('portable Runtime binding validates model identity and isolates overlapping
         const firstModel=await h.compile({schema:firstSchema}),secondModel=await h.compile({schema:secondSchema});
         const first=await h.attach({model:firstModel,runtime:h.bind(firstModel),name:'runtime_first'});
         const second=await h.attach({model:secondModel,runtime:h.bind(secondModel),name:'runtime_second'});
-        await first.createSchema();await second.createSchema();
-        const firstRepo=await first.get({path:'/shared/item'}),secondRepo=await second.get({path:'/shared/item'});
-        await firstRepo.create({record:{name:'Ada'}});await secondRepo.create({record:{count:7}});
+        await first.createSchema();
+        await assert.rejects(second.createSchema(),{code:'CONFLICT'});
+        const firstRepo=await first.get({path:'/shared/item'});
+        await firstRepo.create({record:{name:'Ada'}});
         assert.deepEqual((await firstRepo.list({selection:{}})).records,[{name:'Ada'}]);
-        assert.deepEqual((await secondRepo.list({selection:{}})).records,[{count:'7'}]);
         const batch=await first.execute({operations:[
             {path:'/shared/item',method:'create',params:{record:{name:'Grace'}}},
             {path:'/shared/item',method:'list',params:{selection:{}}},
@@ -169,7 +185,7 @@ test('portable startup rejects model and physical drift without changing the sco
         const first=await h.attach({model,name:'safe'});
         await first.createSchema();
         await (await first.get({path:'/safe/item'})).create({record:{name:'kept'}});
-        const table='dem_p_'+createHash('sha256').update('safe').digest('hex').slice(0,12)+'_'+createHash('sha256').update('/safe/item').digest('hex').slice(0,24);
+        const table='safe_item';
         const beforeColumns=await h.db.raw('SELECT name,type FROM pragma_table_info(?)',[table]);
         const beforeHistory=await first.getSchemaHistory();
         const changedProvider=await h.attach({model:nextModel,name:'safe'});
@@ -182,7 +198,7 @@ test('portable startup rejects model and physical drift without changing the sco
         const damagedModel=await h.compile({schema:{$format:2,$namespace:'/damaged/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
         const damaged=await h.attach({model:damagedModel,name:'damaged'});
         await damaged.createSchema();
-        const damagedTable='dem_p_'+createHash('sha256').update('damaged').digest('hex').slice(0,12)+'_'+createHash('sha256').update('/damaged/item').digest('hex').slice(0,24);
+        const damagedTable='damaged_item';
         await h.db.schema.dropTable(damagedTable);
         const reopened=await h.attach({model:damagedModel,name:'damaged'});
         await assert.rejects(reopened.createSchema(),{code:'UNSUPPORTED'});
