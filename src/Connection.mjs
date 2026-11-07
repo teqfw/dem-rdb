@@ -4,8 +4,11 @@
  * @description Owns one Knex client and its pool lifecycle.
  */
 export default class Connection {
-    /** @param {object} deps @param {typeof import('knex').default} deps.knexFactory */
-    constructor({knexFactory}) {
+    /**
+     * @param {object} deps
+     * @param {any} deps.createRequire
+     */
+    constructor({createRequire}) {
         let state = 'new';
         let client;
         let initPromise;
@@ -24,7 +27,11 @@ export default class Connection {
                 state = 'failed';
                 throw new TypeError('A nonempty Knex client is required.');
             }
-            initPromise = Promise.resolve().then(() => knexFactory(config)).then(value => {
+            initPromise = Promise.resolve().then(async () => {
+                if (typeof createRequire !== 'function') throw new TypeError('The package-owned Knex resolver is unavailable.');
+                const factory = (await import(createRequire(import.meta.url).resolve('knex'))).default;
+                return factory(config);
+            }).then(value => {
                 client = value;
                 if (state === 'initializing') state = 'ready';
             }, error => {
@@ -56,4 +63,4 @@ export default class Connection {
         };
     }
 }
-export const __deps__ = Object.freeze({default: Object.freeze({knexFactory: 'npm:knex__default'})});
+export const __deps__ = Object.freeze({default: Object.freeze({createRequire:'node:module__createRequire'})});

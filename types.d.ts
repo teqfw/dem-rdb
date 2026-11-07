@@ -10,9 +10,6 @@ export interface RdbRuntime {
 
 export interface RdbConfiguration {
     model: DemModel;
-    projection?: 'native' | 'portable';
-    name?: string;
-    enforceRelations?: boolean;
     /** DEM Runtime binding for model-scoped Core or extension operations. */
     runtime?: RdbRuntime;
 }
@@ -27,8 +24,8 @@ export interface RdbConfigurationProvider {
 export interface RdbBackend {
     execute(params: {operations: DemBatchOperation[]}): Promise<DemBatchResult>;
     get(params: {path: string}): Promise<import('@teqfw/dem').DemRepository>;
-    createSchema(options?: {publish?: boolean}): Promise<void | {version: number}>;
-    getSchemaHistory(): Promise<{schemas: {version: number; model: DemModel}[]}>;
+    createSchema(): Promise<void>;
+    initialize(params: {scope: string; compilation: import('@teqfw/dem').DemCompilationResult}): Promise<{created: boolean; snapshot: any; application: any}>;
     close(): Promise<void>;
 }
 export interface RdbAdapter {
@@ -46,8 +43,6 @@ declare global {
     type TeqFw_Dem_RDb_Config__Class = typeof import("./src/Config.mjs").default;
     type TeqFw_Dem_RDb_Connection = import("./src/Connection.mjs").default;
     type TeqFw_Dem_RDb_Connection__Class = typeof import("./src/Connection.mjs").default;
-    type TeqFw_Dem_RDb_Portable = import("./src/Portable.mjs").default;
-    type TeqFw_Dem_RDb_Portable__Class = typeof import("./src/Portable.mjs").default;
     type TeqFw_Dem_RDb_Provider = import("./src/Provider.mjs").default;
     type TeqFw_Dem_RDb_Provider__Class = typeof import("./src/Provider.mjs").default;
 }

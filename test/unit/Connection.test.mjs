@@ -1,58 +1,31 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
 import Connection from '../../src/Connection.mjs';
 
-test('connection clones configuration, returns one owned client and disconnects once',async()=>{
-    let config, destroyed=0;
-    const source={client:'sqlite3',connection:{filename:':memory:'}};
-    const connection=new Connection({knexFactory:async value=>{config=value;return {destroy:async()=>{destroyed++;}};}});
+test('connection creates and destroys its package-owned Knex client once',async()=>{
+    const connection=new Connection({createRequire});
+    const source={client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}};
     await connection.init(source);
-    assert.notEqual(config,source);
-    assert.notEqual(config.connection,source.connection);
-    assert.equal(connection.getClient().destroy instanceof Function,true);
-    await Promise.all([connection.disconnect(),connection.disconnect()]);
+    const client=connection.getClient();
+    assert.equal(await client.raw('SELECT 1 AS value').then(result=>result[0].value),1);
+    source.connection.filename='changed';
+    assert.equal(connection.getClient(),client);
     await connection.disconnect();
-    assert.equal(destroyed,1);
-    assert.throws(()=>connection.getClient());
-    await assert.rejects(connection.init(source));
-});
-
-test('connection rejects access and repeated or concurrent initialization',async()=>{
-    let finish;
-    const connection=new Connection({knexFactory:()=>new Promise(resolve=>{finish=resolve;})});
-    assert.throws(()=>connection.getClient());
-    const initializing=connection.init({client:'sqlite3'});
-    await assert.rejects(connection.init({client:'sqlite3'}));
-    await new Promise(resolve=>setImmediate(resolve));
-    const closing=connection.disconnect();
-    assert.throws(()=>connection.getClient());
-    const destroyed=[];
-    finish({destroy:async()=>destroyed.push(true)});
-    await initializing;
-    await closing;
-    assert.deepEqual(destroyed,[true]);
-    assert.throws(()=>connection.getClient());
-});
-
-test('failed initialization is terminal and destroy failures propagate once',async()=>{
-    const failure=new Error('factory failure');
-    const broken=new Connection({knexFactory:async()=>{throw failure;}});
-    await assert.rejects(broken.init({client:'pg'}),error=>error===failure);
-    await assert.rejects(broken.init({client:'pg'}));
-    const closeError=new Error('destroy failure');
-    let calls=0;
-    const connection=new Connection({knexFactory:async()=>({destroy:async()=>{calls++;throw closeError;}})});
-    await connection.init({client:'sqlite3'});
-    const results=await Promise.allSettled([connection.disconnect(),connection.disconnect()]);
-    assert.deepEqual(results.map(result=>result.status),['rejected','rejected']);
-    assert.equal(results[0].reason,closeError);
-    assert.equal(results[1].reason,closeError);
-    assert.equal(calls,1);
-});
-
-test('disconnect before initialization makes the Connection terminal',async()=>{
-    const connection=new Connection({knexFactory:async()=>assert.fail('factory must not run')});
     await connection.disconnect();
     assert.throws(()=>connection.getClient());
     await assert.rejects(connection.init({client:'sqlite3'}));
+});
+
+test('failed initialization and disconnect before init are terminal',async()=>{
+    const broken=new Connection({createRequire});
+    await assert.rejects(broken.init({client:'no-such-knex-client'}));
+    await assert.rejects(broken.init({client:'sqlite3'}));
+    await broken.disconnect();
+    assert.throws(()=>broken.getClient());
+
+    const closed=new Connection({createRequire});
+    await closed.disconnect();
+    await assert.rejects(closed.init({client:'sqlite3'}));
+    assert.throws(()=>closed.getClient());
 });

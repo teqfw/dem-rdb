@@ -1,27 +1,79 @@
 import assert from 'node:assert/strict';
+import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
-import knex from 'knex';
-import Connection from '../src/Connection.mjs';
 import {register} from '@teqfw/dem/conformance';
 import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 
-async function open({schema,map}) {
+async function open({schema,map,schemas,trustedPackages=[],filename=':memory:',createSchema=true}) {
     const c = new Container();
     c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
-    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
-    const connection = new Connection({knexFactory:knex});
-    await connection.init({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
+    const compilation = await compiler.exec({schemas:schemas ?? [{packageName:'test',filename:'schema.json',document:schema}],trustedPackages,...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
+    const {model} = compilation;
+    const connection = await c.get('TeqFw_Dem_RDb_Connection$');
+    await connection.init({client:'sqlite3',connection:{filename},useNullAsDefault:true,pool:{min:1,max:1}});
     const db = connection.getClient();
     const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
     const provider = await adapter.open({model,connection});
-    await provider.createSchema();
-    return {provider,model,db,connection,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>connection.disconnect()};
+    if (createSchema) await provider.createSchema();
+    return {provider,model,compilation,compiler,adapter,db,connection,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>connection.disconnect()};
 }
 register({test,assert,open});
+
+test('SQLite initializes and reopens the same model with ordinary DEM history tables',async()=>{
+    const directory=await mkdtemp(join(tmpdir(),'dem-rdb-history-'));
+    const filename=join(directory,'history.sqlite');
+    const infrastructure=JSON.parse(await readFile(new URL(import.meta.resolve('@teqfw/dem/etc/dem-schema.json')),'utf8'));
+    const schemas=[
+        {packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}},
+        {packageName:'@teqfw/dem',filename:'etc/dem-schema.json',document:infrastructure},
+    ];
+    const first=await open({schemas,trustedPackages:['@teqfw/dem'],filename,createSchema:false});
+    let second;
+    try {
+        const initial=await first.provider.initialize({scope:'test-scope',compilation:first.compilation});
+        assert.equal(initial.created,true);
+        assert.equal(initial.application.source_id,null);
+        assert.equal(initial.application.target_id,initial.snapshot.id);
+        assert.equal(initial.application.outcome,'confirmed');
+        assert.match(initial.application.evidence,/created or verified/i);
+        assert.equal(initial.snapshot.canonical,JSON.stringify(first.compilation.canonical));
+        assert.equal(initial.snapshot.fingerprint,first.compilation.fingerprint);
+        assert.equal(initial.snapshot.canonicalization,'dem-logical-1/dem-sha256-1');
+        const items=await first.provider.get({path:'/app/item'});
+        const saved=(await items.create({record:{name:'Ada'}})).record;
+        assert.equal((await items.read({key:{kind:'primary',values:{id:saved.id}}})).record.name,'Ada');
+    } finally { await first.provider.close(); await first.close(); }
+
+    second=await open({schemas,trustedPackages:['@teqfw/dem'],filename,createSchema:false});
+    try {
+        const reopened=await second.provider.initialize({scope:'test-scope',compilation:second.compilation});
+        assert.equal(reopened.created,false);
+        assert.equal(reopened.snapshot.fingerprint,second.compilation.fingerprint);
+        assert.equal(reopened.application.outcome,'confirmed');
+        const items=await second.provider.get({path:'/app/item'});
+        assert.deepEqual((await items.list({selection:{}})).records,[{id:'1',name:'Ada'}]);
+        assert.equal((await (await second.provider.get({path:'/dem/application'})).list({selection:{}})).records.length,1);
+        const tables=await second.db('sqlite_master').select('name').where('type','table').whereNot('name','like','sqlite_%').orderBy('name');
+        assert.deepEqual(tables.map(row=>row.name),['app_item','dem_application','dem_snapshot']);
+        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['app_item'])).map(row=>row.name),['id','name']);
+        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['dem_snapshot'])).map(row=>row.name),['id','canonical','fingerprint','canonicalization','provenance']);
+
+        const changed=await second.compiler.exec({schemas:[
+            {...schemas[0],document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}},{name:'category',type:{name:'text'}}]}}},
+            schemas[1],
+        ],trustedPackages:['@teqfw/dem']});
+        const changedBackend=await second.adapter.open({model:changed.model,connection:second.connection});
+        await assert.rejects(()=>changedBackend.initialize({scope:'test-scope',compilation:changed}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await changedBackend.close();
+        assert.deepEqual((await (await second.provider.get({path:'/app/item'})).list({selection:{}})).records,[{id:'1',name:'Ada'}]);
+    } finally { await second.provider.close(); await second.close(); await rm(directory,{recursive:true,force:true}); }
+});
 
 test('schema creation is explicit and rejects an existing target', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
@@ -38,13 +90,17 @@ test('unsupported model is rejected before database effects', async () => {
     c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
-    const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:2,$namespace:'/app/',record:{attributes:[{name:'data',type:{name:'json'},generation:true}]}}}]});
-    const connection = new Connection({knexFactory:knex});
+    const compiled=await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:2,$namespace:'/app/',record:{attributes:[{name:'data',type:{name:'json'}}]}}}]});
+    const unsupported=structuredClone(compiled.model);
+    unsupported.entities['/app/record'].attributes[0].type.name='unsupported';
+    const connection = await c.get('TeqFw_Dem_RDb_Connection$');
     await connection.init({client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}});
     const db = connection.getClient();
     try {
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        await assert.rejects(adapter.open({model,connection}), {name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await assert.rejects(adapter.open({model:unsupported,connection}), {name:'DemRepositoryError',code:'UNSUPPORTED'});
+        const longPath=await compiler.exec({schemas:[{packageName:'test',filename:'long.json',document:{$format:2,$namespace:`/${'a'.repeat(256)}/`,item:{attributes:[{name:'value',type:{name:'text'}}]}}}]});
+        await assert.rejects(adapter.open({model:longPath.model,connection}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
         assert.deepEqual(await db('sqlite_master').select('name').where('type','table'), []);
     } finally { await connection.disconnect(); }
 });
@@ -73,7 +129,7 @@ test('canonical nested Format 2 paths resolve', async () => {
 test('CFG, real DI routing and independent Providers share owned Connections safely', async()=>{
     const c=new Container({
         namespaces:[
-            {prefix:'TeqFw_Cfg_',target:new URL('../src',import.meta.resolve('@teqfw/cfg/src/Reader.mjs')).pathname,defaultExt:'.mjs'},
+            {prefix:'TeqFw_Cfg_',target:new URL('../../cfg/src',import.meta.url).pathname,defaultExt:'.mjs'},
             {prefix:'TeqFw_Dem_',target:new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,defaultExt:'.mjs'},
             {prefix:'TeqFw_Dem_RDb_',target:new URL('../src',import.meta.url).pathname,defaultExt:'.mjs'},
             {prefix:'Test_',target:new URL('./fixture',import.meta.url).pathname,defaultExt:'.mjs'},
@@ -190,7 +246,7 @@ test('DI routing rejects an unmatched repository consumer',async()=>{
 
 test('partial connection bootstrap failure disconnects every resolved Connection',async()=>{
     const c=new Container({namespaces:[
-        {prefix:'TeqFw_Cfg_',target:new URL('../src',import.meta.resolve('@teqfw/cfg/src/Reader.mjs')).pathname,defaultExt:'.mjs'},
+        {prefix:'TeqFw_Cfg_',target:new URL('../../cfg/src',import.meta.url).pathname,defaultExt:'.mjs'},
         {prefix:'TeqFw_Dem_RDb_',target:new URL('../src',import.meta.url).pathname,defaultExt:'.mjs'},
         {prefix:'Test_',target:new URL('./fixture',import.meta.url).pathname,defaultExt:'.mjs'},
     ]});
@@ -252,7 +308,7 @@ test('unique key and index may share a logical name', async () => {
 test('provider rejects a missing or incompatible physical table', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
-        const physical = 'dem_' + Buffer.from('/app/item').toString('hex');
+        const physical = 'app_item';
         await env.db.schema.dropTable(physical);
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
         await env.db.schema.createTable(physical, table => table.integer('name'));
@@ -267,8 +323,8 @@ test('provider rejects missing uniqueness and foreign key constraints', async ()
     };
     const env = await open({schema});
     try {
-        const parentTable = 'dem_' + Buffer.from('/app/parent').toString('hex');
-        const childTable = 'dem_' + Buffer.from('/app/child').toString('hex');
+        const parentTable = 'app_parent';
+        const childTable = 'app_child';
         await env.db.schema.raw('DROP INDEX ??', [`${parentTable}_u_name`]);
         await assert.rejects(env.provider.get({path:'/app/parent'}),{code:'UNSUPPORTED'});
         await env.db.schema.dropTable(childTable);
@@ -284,7 +340,7 @@ test('all core DEM values round-trip with exact selection semantics',async()=>{
 });
 
 
-test('SQLite native identity boundary is exact and exhaustion leaves contents unchanged',async()=>{
+test('SQLite identity boundary is exact and exhaustion leaves contents unchanged',async()=>{
     const env=await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
     try {
         const repo=await env.provider.get({path:'/app/item'});

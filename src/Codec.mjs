@@ -23,14 +23,12 @@ export default class Codec {
          * @param {any} deps.attribute
          * @param {string} deps.dialect
          * @param {boolean} deps.indexed
-         * @param {boolean} [deps.portable]
          * @returns {string}
          */
-        this.type = function ({attribute:a,dialect,indexed,portable=false}) {
+        this.type = function ({attribute:a,dialect,indexed}) {
             const n=a.type.name,p=a.type.params ?? {};
             if (n==='boolean') return 'integer';
             if (numeric(a)) {
-                if (n !== 'integer' && portable) return dialect==='mysql2' ? 'longblob' : 'text';
                 if (n !== 'integer') return dialect==='pg' ? 'bigint' : dialect==='mysql2' ? 'bigint unsigned' : 'integer';
                 if (p.bits < 32 || p.bits === 32 && !p.unsigned) return 'integer';
                 if (dialect==='sqlite3') return 'text';
@@ -50,15 +48,14 @@ export default class Codec {
          * @param {any} deps.entity
          * @param {any} deps.record
          * @param {string} deps.dialect
-         * @param {boolean} [deps.portable]
          * @returns {any}
          */
-        this.encode = function ({entity,record,dialect,portable=false}) {
+        this.encode = function ({entity,record,dialect}) {
             return Object.fromEntries(Object.entries(record).map(([key,value])=>{
                 const a=entity.attributes.find(a=>a.name===key), n=a.type.name;
                 if (value===null) return [key,null];
-                const type=this.type({attribute:a,dialect,indexed:portable ? false : this.indexed(entity,key),portable});
-                if (!portable && ['identity','ref'].includes(n) && a.type.profile.type==='int') {
+                const type=this.type({attribute:a,dialect,indexed:this.indexed(entity,key)});
+                if (['identity','ref'].includes(n) && a.type.profile.type==='int') {
                     const max=dialect==='mysql2' ? 18446744073709551615n : 9223372036854775807n;
                     if (BigInt(value)>max) throw errors.create({code:'UNSUPPORTED',message:'Identity exceeds native 64-bit storage capacity.'});
                     return [key,String(value)];
@@ -69,17 +66,17 @@ export default class Codec {
                     return [key,number];
                 }
                 if (n==='boolean') return [key,Number(value)];
-                if (!portable && typeof value==='string' && ['string','text','enum','uuid','date','datetime','identity','ref'].includes(n) && (Buffer.from(value,'utf8').toString('utf8')!==value || dialect==='pg' && value.includes('\0')))
+                if (typeof value==='string' && ['string','text','enum','uuid','date','datetime','identity','ref'].includes(n) && (Buffer.from(value,'utf8').toString('utf8')!==value || dialect==='pg' && value.includes('\0')))
                     throw errors.create({code:'UNSUPPORTED',message:'Text cannot be represented losslessly in the selected physical encoding.'});
                 if (n==='binary') value=Buffer.from(String(value),'base64');
-                else if (['json','vector'].includes(n) || portable && !numeric(a) && !['boolean','decimal'].includes(n)) value=JSON.stringify(value,(_key,item)=>item && typeof item==='object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])) : item);
+                else if (['json','vector'].includes(n)) value=JSON.stringify(value,(_key,item)=>item && typeof item==='object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])) : item);
                 if (dialect==='mysql2' && ['longblob','varbinary(512)'].includes(type) && !Buffer.isBuffer(value)) value=Buffer.from(String(value),'utf8');
                 if (type==='varbinary(512)' && Buffer.byteLength(value)>512) throw errors.create({code:'UNSUPPORTED',message:'Indexed MariaDB value exceeds 512 bytes.'});
                 return [key,value];
             }));
         };
-        /** @param {any} entity @param {any} row @param {boolean} [portable] @returns {any} */
-        this.decode = function (entity,row,portable=false) {
+        /** @param {any} entity @param {any} row @returns {any} */
+        this.decode = function (entity,row) {
             if (!row) return null;
             try {
                 const result=Object.fromEntries(entity.attributes.map(a=>{
@@ -100,7 +97,7 @@ export default class Codec {
                     }
                     if (a.type.name==='decimal' && typeof value!=='string') throw new Error('Exact decimals require string driver results');
                     if (a.type.name==='boolean') { if (![0,1,false,true].includes(value)) throw new Error('Invalid boolean'); value=Boolean(value); }
-                    if (['json','vector'].includes(a.type.name) || portable && !numeric(a) && !['boolean','decimal'].includes(a.type.name)) value=JSON.parse(value);
+                    if (['json','vector'].includes(a.type.name)) value=JSON.parse(value);
                     return [a.name,value];
                 }));
                 return normalize.record({entity,record:result,mode:'complete'});

@@ -5,35 +5,12 @@ description: Integrate the TeqFW DEM relational adapter into a host application.
 
 # DEM relational adapter
 
-Read the package README for current APIs, engine requirements and capability
-bounds. The host selects and compiles the Effective DEM, loads CFG, and registers
-the CFG, DEM and DEM-RDB namespace roots. DEM-RDB Config reads default and named
-Knex options from the shared CFG snapshot. Initialize a DI-managed Connection
-with `connection.init(config.get(name))`; DEM-RDB exclusively creates and destroys
-the Knex client. Use `Adapter.open({model, connection, projection: 'portable'})`
-and explicitly call `createSchema()` before repository use.
+Read the package README for current APIs and engine capability bounds. The host composes application descriptors with the selected `@teqfw/dem` infrastructure descriptor, compiles one Effective DEM for each storage scope, loads CFG and registers the CFG, DEM and DEM-RDB namespace roots. DEM-RDB Config reads default and named Knex options from the shared CFG snapshot. Initialize a DI-managed Connection with `connection.init(config.get(name))`; DEM-RDB exclusively creates and destroys the Knex client.
 
-Route RepositoryProvider and RepositoryBatch requests to the same selected host
-Provider wrapper through DI preprocessing. Route that Provider's Configuration
-and Connection dependencies by effective provenance. Its host Configuration
-returns `{model, projection: 'portable'}` and may include `name`,
-`enforceRelations`, and a model-bound `runtime`; it contains no Knex client or
-physical Connection selector. The Provider opens lazily and borrows its selected
-Connection. Backend closure never disconnects a shared Connection. A Runtime is
-optional for Core-only models. Extension models require a compatible Runtime,
-and the adapter currently rejects extension types, including `idb.CryptoKey`, as
-unsupported.
+Open the adapter with `{model: compilation.model, connection}`. Call `initialize({scope, compilation})` for first setup and reopening. It creates ordinary tables and confirmed DEM history for an empty database, reuses a matching confirmed scope, and rejects an incompatible or incomplete layout without migrating it. For explicit table creation without history, call `createSchema()`; existing tables cause a visible conflict.
 
-Portable supports Core CRUD, List and atomic ordered batches. Its stable `name`
-selects a storage family; normal `createSchema()` creates a new scope or validates
-an existing scope against the same canonical model. Structural changes require
-the explicit `createSchema({publish: true})` operation, retain model snapshots and
-invalidate stale backends and their repositories. Reopen against the published
-model. Native is the default when
-`projection` is omitted and has a separate capability and storage boundary; changing
-projection requires host data migration. Consult the README for constraints and
-engine-specific schema behavior.
+The adapter uses one relational projection: table names join DEM path segments with `_`, and SQL columns use the declared attribute names. It adds no private row metadata and does not hash physical identifiers. Overlong or colliding identifiers fail explicitly. Extension types and values the selected engine cannot represent faithfully are unsupported.
 
-Use Format 2 DEM schema descriptors; host maps use Format 1. Verify integration
-with real SQLite. PostgreSQL and MariaDB are optional integration environments and
-require their own configured tests; SQLite results do not establish their conformance.
+Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. Route that Provider's Configuration and Connection dependencies by effective provenance. Its host Configuration supplies the compiled model and optional model-bound `runtime`; it contains no Knex client or physical Connection selector. The Provider opens lazily and borrows its selected Connection. Backend closure never disconnects a shared Connection.
+
+Use Format 2 DEM descriptors and Format 1 host maps. Verify the integration with real SQLite. PostgreSQL and MariaDB need their separately configured integration environments; SQLite results do not establish their conformance.

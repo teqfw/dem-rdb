@@ -5,11 +5,11 @@ import knex from 'knex';
 import Connection from '../../src/Connection.mjs';
 import {register} from '@teqfw/dem/conformance';
 import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
-import {createHash,randomBytes} from 'node:crypto';
+import {randomBytes} from 'node:crypto';
 
 const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE};
 if (Object.values(connection).some(value => !value)) throw new Error('MariaDB test connection environment is incomplete.');
-const table = path => 'dem_' + createHash('sha256').update(path).digest('hex').slice(0,32);
+const table = path => path.slice(1).replaceAll('/', '_');
 async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberStrings:true}}) {
     const ownedConnection=new Connection({knexFactory:knex});
     await ownedConnection.init({client:'mysql2',connection:{...connection,...driverOptions},pool:{min:0,max:4}});

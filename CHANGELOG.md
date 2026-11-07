@@ -2,10 +2,9 @@
 
 ## Unreleased
 
-- Integrate model-bound DEM Runtime operations in portable persistence, with
-  fail-fast checks for model mismatches and unsupported extension types.
-- Prevent stale portable backends from publishing an obsolete schema after a
-  structural update.
+- Replace native and portable layouts with one DEM-derived relational projection
+  and add initial confirmed model history for empty SQLite storage scopes.
+- Let DEM-RDB resolve and own its Knex client through its DI-managed Connection.
 - Align schema descriptors and conformance tests with DEM Format 2 and use the
   current GitHub source for the DEM dependency.
 

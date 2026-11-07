@@ -5,7 +5,7 @@ import knex from 'knex';
 import Connection from '../../src/Connection.mjs';
 import {register} from '@teqfw/dem/conformance';
 import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
-import {createHash, randomBytes} from 'node:crypto';
+import {randomBytes} from 'node:crypto';
 
 const connection = {host:process.env.TEQFW_DB__PG_HOST,user:process.env.TEQFW_DB__PG_USER,password:process.env.TEQFW_DB__PG_PASSWORD,database:process.env.TEQFW_DB__PG_DATABASE};
 if (Object.values(connection).some(value => !value)) throw new Error('PostgreSQL test connection environment is incomplete.');
@@ -64,8 +64,8 @@ test('parallel generated identities are unique', async () => {
 test('provider detects missing unique constraints', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}}}});
     try {
-        const physical = 'dem_' + createHash('sha256').update('/app/item').digest('hex').slice(0,32);
-        await env.db.schema.alterTable(physical, t => t.dropUnique(['name'], `${physical}_u_${createHash('sha256').update('name').digest('hex').slice(0,16)}`));
+        const physical = 'app_item';
+        await env.db.schema.alterTable(physical, t => t.dropUnique(['name'], `${physical}_u_name`));
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
@@ -88,21 +88,28 @@ test('cyclic relationships are created after both tables', async () => {
 test('provider rejects unmodelled unique indexes', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
-        const physical = 'dem_' + createHash('sha256').update('/app/item').digest('hex').slice(0,32);
+        const physical = 'app_item';
         await env.db.schema.alterTable(physical, table => table.unique(['name'], {indexName:'extra_unique',useConstraint:false}));
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
 
-test('long logical paths and key names map to valid physical identifiers', async () => {
-    const path = '/vendor/feature/customer/identity/record';
-    const schema = {$format:2,$namespace:'/vendor/feature/','customer/identity/record':{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{a_very_long_unique_key_name_for_customer:['name']}}};
-    const env = await open({schema});
+test('long generated constraint names fail before schema creation', async () => {
+    const schema={$format:2,$namespace:'/vendor/feature/','customer/identity/record':{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{a_very_long_unique_key_name_for_customer:['name']}}};
+    const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
+    const conn=new Connection({knexFactory:knex});
+    await conn.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:1}});
     try {
-        const repo = await env.provider.get({path});
-        assert.deepEqual(await repo.create({record:{name:'ok'}}),{record:{name:'ok'}});
-        await assert.rejects(repo.create({record:{name:'ok'}}),{code:'CONFLICT'});
-    } finally { await env.close(); }
+        await conn.getClient().schema.createSchema(namespace);
+        const c=new Container();
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+        (await c.get('TeqFw_Dem_Registry$')).finalize();
+        const compilation=await (await c.get('TeqFw_Dem_Compile$')).exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
+        const adapter=await c.get('TeqFw_Dem_RDb_Adapter$');
+        await assert.rejects(adapter.open({model:compilation.model,connection:conn}),{code:'UNSUPPORTED'});
+        assert.equal(await conn.getClient().schema.hasTable('vendor_feature_customer_identity_record'),false);
+    } finally { await conn.getClient().schema.dropSchemaIfExists(namespace,true); await conn.disconnect(); }
 });
 
 
