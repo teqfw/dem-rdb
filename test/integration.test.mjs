@@ -38,6 +38,7 @@ test('SQLite initializes and reopens the same model with ordinary DEM history ta
     try {
         const initial=await first.provider.initialize({scope:'test-scope',compilation:first.compilation});
         assert.equal(initial.created,true);
+        assert.equal(initial.application.scope,'test-scope');
         assert.equal(initial.application.source_id,null);
         assert.equal(initial.application.target_id,initial.snapshot.id);
         assert.equal(initial.application.outcome,'confirmed');
@@ -62,6 +63,7 @@ test('SQLite initializes and reopens the same model with ordinary DEM history ta
         const tables=await second.db('sqlite_master').select('name').where('type','table').whereNot('name','like','sqlite_%').orderBy('name');
         assert.deepEqual(tables.map(row=>row.name),['app_item','dem_application','dem_snapshot']);
         assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['app_item'])).map(row=>row.name),['id','name']);
+        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['dem_application'])).map(row=>row.name),['id','scope','source_id','target_id','outcome','evidence']);
         assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['dem_snapshot'])).map(row=>row.name),['id','canonical','fingerprint','canonicalization','provenance']);
 
         const changed=await second.compiler.exec({schemas:[
