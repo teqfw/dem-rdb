@@ -23,6 +23,8 @@ export default class Provider {
         this.get=async function (params) {return (await backend()).get(params);};
         /** @param {any} params @returns {Promise<any>} */
         this.execute=async function (params) {return (await backend()).execute(params);};
+        /** @param {any} params @returns {Promise<any>} */
+        this.initialize=async function (params) {return (await backend()).initialize(params);};
         /** @returns {Promise<void>} */
         this.close=function () {
             if (closePromise) return closePromise;

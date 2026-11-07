@@ -36,6 +36,8 @@ test('SQLite initializes and reopens the same model with ordinary DEM history ta
     const first=await open({schemas,trustedPackages:['@teqfw/dem'],filename,createSchema:false});
     let second;
     try {
+        await assert.rejects(()=>first.provider.get({path:'/app/item'}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await assert.rejects(()=>first.provider.execute({operations:[]}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
         const initial=await first.provider.initialize({scope:'test-scope',compilation:first.compilation});
         assert.equal(initial.created,true);
         assert.equal(initial.application.scope,'test-scope');
@@ -49,6 +51,7 @@ test('SQLite initializes and reopens the same model with ordinary DEM history ta
         const items=await first.provider.get({path:'/app/item'});
         const saved=(await items.create({record:{name:'Ada'}})).record;
         assert.equal((await items.read({key:{kind:'primary',values:{id:saved.id}}})).record.name,'Ada');
+        assert.deepEqual((await first.provider.execute({operations:[{path:'/app/item',method:'list',params:{selection:{}}}]})).results[0],{records:[saved]});
     } finally { await first.provider.close(); await first.close(); }
 
     second=await open({schemas,trustedPackages:['@teqfw/dem'],filename,createSchema:false});
@@ -71,9 +74,13 @@ test('SQLite initializes and reopens the same model with ordinary DEM history ta
             schemas[1],
         ],trustedPackages:['@teqfw/dem']});
         const changedBackend=await second.adapter.open({model:changed.model,connection:second.connection});
+        const snapshotsBefore=(await (await second.provider.get({path:'/dem/snapshot'})).list({selection:{}})).records;
+        const applicationsBefore=(await (await second.provider.get({path:'/dem/application'})).list({selection:{}})).records;
         await assert.rejects(()=>changedBackend.initialize({scope:'test-scope',compilation:changed}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
         await changedBackend.close();
         assert.deepEqual((await (await second.provider.get({path:'/app/item'})).list({selection:{}})).records,[{id:'1',name:'Ada'}]);
+        assert.deepEqual((await (await second.provider.get({path:'/dem/snapshot'})).list({selection:{}})).records,snapshotsBefore);
+        assert.deepEqual((await (await second.provider.get({path:'/dem/application'})).list({selection:{}})).records,applicationsBefore);
     } finally { await second.provider.close(); await second.close(); await rm(directory,{recursive:true,force:true}); }
 });
 
@@ -112,9 +119,10 @@ test('repository provider obtains the model and connection from its host configu
     try {
         const Provider = (await import('../src/Provider.mjs')).default;
         let calls = 0;
-        const provider = new Provider({configuration:{get:async () => { calls++; return {}; }},connection:env.connection,adapter:{open:async () => env.provider}});
+        const provider = new Provider({configuration:{get:async () => { calls++; return {}; }},connection:env.connection,adapter:{open:async () => ({...env.provider,initialize:async ({scope,compilation})=>({created:false,scope,fingerprint:compilation.fingerprint})})}});
         const repo = await provider.get({path:'/app/item'});
         await repo.create({record:{name:'Ada'}});
+        assert.deepEqual(await provider.initialize({scope:'test',compilation:env.compilation}),{created:false,scope:'test',fingerprint:env.compilation.fingerprint});
         assert.equal((await provider.get({path:'/app/item'})) !== null, true);
         assert.equal(calls, 1);
     } finally { await env.close(); }

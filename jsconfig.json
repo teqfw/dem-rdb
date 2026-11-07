@@ -20,7 +20,6 @@
     "node_modules/@flancer32",
     "node_modules/@teqfw",
     "src/**/*.mjs",
-    "test/types.ts",
-    "test/compare/application/*.mjs"
+    "test/types.ts"
   ]
 }

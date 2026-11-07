@@ -15,6 +15,7 @@ export default class Adapter {
      * @param {typeof import("node:crypto").randomUUID} deps.randomUUID
      */
     constructor({normalize, selection, errors, codec, evaluate, randomUUID, batch}) {
+        const historyAccess = Symbol('historyAccess');
         /**
          * @param {any} code
          * @param {string} message
@@ -190,6 +191,7 @@ export default class Adapter {
                 || Object.keys(options).some(key => !['model','connection','runtime'].includes(key))
                 || !Object.hasOwn(options, 'model') || !Object.hasOwn(options, 'connection')) fail('INVALID_INPUT','A model and DEM-RDB Connection are required.');
             const {model, connection, runtime}=options;
+            const historyManaged = Boolean(model?.entities?.['/dem/snapshot'] || model?.entities?.['/dem/application']);
             if (typeof connection?.getClient !== 'function') fail('INVALID_INPUT','A ready DEM-RDB Connection is required.');
             const knex = connection.getClient();
             if (!model?.entities) fail('INVALID_INPUT','A compiled DEM model is required.');
@@ -215,6 +217,7 @@ export default class Adapter {
             if (!model?.entities || typeof knex !== 'function' || !['sqlite3','pg','mysql2'].includes(knex.client.config.client)) fail('UNSUPPORTED', 'A compiled model and supported Knex connection are required.');
             const adapter=this;
             let closed=false;
+            let initialized=!historyManaged || options[historyAccess] === true;
             const pg = knex.client.config.client === 'pg';
             const mysql = knex.client.config.client === 'mysql2';
             const deferredForeign = pg || mysql;
@@ -246,7 +249,7 @@ export default class Adapter {
              * @param {any} params
              * @returns {Promise<any>}
              */
-            const get = async function (params) {
+            const getRepository = async function (params) {
                 if (closed) fail('STORAGE','Provider is closed.');
                 shape(params, ['path']);
                 const {path} = params;
@@ -386,6 +389,11 @@ export default class Adapter {
                     }),
                 };
             };
+            /** @param {any} params @returns {Promise<any>} */
+            const get = async function (params) {
+                if (historyManaged && !initialized) fail('UNSUPPORTED','Model history must be initialized before repository access.');
+                return getRepository(params);
+            };
             /**
              * @returns {Promise<void>}
              */
@@ -469,37 +477,40 @@ export default class Adapter {
                 })();
                 if (knownTables.length === 0) await createSchema();
                 else if (JSON.stringify(knownTables) !== JSON.stringify(expectedTables)) fail('UNSUPPORTED','Storage tables do not match the selected Effective DEM.');
-                for (const path of Object.keys(model.entities)) await get({path});
-                const applications=await (await get({path:applicationPath})).list({selection:{}});
+                for (const path of Object.keys(model.entities)) await getRepository({path});
+                const applications=await (await getRepository({path:applicationPath})).list({selection:{}});
                 const scoped=applications.records.filter(record=>record.scope===scope).sort((a,b)=>BigInt(a.id)>BigInt(b.id) ? -1 : BigInt(a.id)<BigInt(b.id) ? 1 : 0);
                 if (scoped.length) {
                     const current=scoped[0];
                     if (current.outcome!=='confirmed') fail('UNSUPPORTED','The latest model application for this scope is not confirmed.');
-                    const stored=(await (await get({path:snapshotPath})).read({key:{kind:'primary',values:{id:current.target_id}}}))?.record;
+                    const stored=(await (await getRepository({path:snapshotPath})).read({key:{kind:'primary',values:{id:current.target_id}}}))?.record;
                     if (!stored || stored.canonical!==canonical || stored.fingerprint!==compilation.fingerprint || stored.canonicalization!==canonicalization)
                         fail('UNSUPPORTED','The confirmed model for this storage scope differs from the selected Effective DEM.');
+                    initialized=true;
                     return {created:false,snapshot:stored,application:current};
                 }
                 if (applications.records.length) fail('UNSUPPORTED','Storage already contains history for another scope.');
-                const snapshots=await (await get({path:snapshotPath})).list({selection:{limit:1}});
+                const snapshots=await (await getRepository({path:snapshotPath})).list({selection:{limit:1}});
                 if (snapshots.records.length) fail('UNSUPPORTED','Storage contains an unreferenced DEM snapshot.');
                 for (const path of Object.keys(model.entities)) {
                     if (path===snapshotPath || path===applicationPath) continue;
-                    const rows=await (await get({path})).list({selection:{limit:1}});
+                    const rows=await (await getRepository({path})).list({selection:{limit:1}});
                     if (rows.records.length) fail('UNSUPPORTED','Cannot confirm initial history for a populated application table.');
                 }
-                const snapshot=(await (await get({path:snapshotPath})).create({record:{canonical,fingerprint:compilation.fingerprint,canonicalization,provenance:compilation.provenance ?? null}})).record;
-                const application=(await (await get({path:applicationPath})).create({record:{scope,source_id:null,target_id:snapshot.id,outcome:'confirmed',evidence:'Relational tables were created or verified against the selected Effective DEM.'}})).record;
+                const snapshot=(await (await getRepository({path:snapshotPath})).create({record:{canonical,fingerprint:compilation.fingerprint,canonicalization,provenance:compilation.provenance ?? null}})).record;
+                const application=(await (await getRepository({path:applicationPath})).create({record:{scope,source_id:null,target_id:snapshot.id,outcome:'confirmed',evidence:'Relational tables were created or verified against the selected Effective DEM.'}})).record;
+                initialized=true;
                 return {created:true,snapshot,application};
             };
             /** @param {any} params @returns {Promise<any>} */
             const execute=async function (params) {
                 if (closed) fail('STORAGE','Provider is closed.');
+                if (historyManaged && !initialized) fail('UNSUPPORTED','Model history must be initialized before repository access.');
                 shape(params,['operations']);
                 const commands=batchOps.validate({operations:params.operations});
                 try {
                     return await knex.transaction(async trx=>{
-                        const backend=await adapter.open({model,connection:{getClient:()=>trx},...(runtime ? {runtime} : {})});
+                        const backend=await adapter.open({model,connection:{getClient:()=>trx},...(runtime ? {runtime} : {}),[historyAccess]:true});
                         const results=[];
                         for (const command of commands) results.push(await (await backend.get({path:command.path}))[command.method](command.params));
                         return {results};
