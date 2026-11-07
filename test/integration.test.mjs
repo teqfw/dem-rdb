@@ -4,12 +4,12 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
-import {register} from '../../dem/conformance/Repository.mjs';
-import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '../../dem/conformance/Values.mjs';
+import {register} from '@teqfw/dem/conformance';
+import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 
 async function open({schema,map,schemas,trustedPackages=[],filename=':memory:',createSchema=true}) {
     const c = new Container();
-    c.addNamespaceRoot('TeqFw_Dem_', new URL('../../dem/src', import.meta.url).pathname, '.mjs');
+    c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
@@ -28,7 +28,7 @@ register({test,assert,open});
 test('SQLite initializes and reopens the same model with ordinary DEM history tables',async()=>{
     const directory=await mkdtemp(join(tmpdir(),'dem-rdb-history-'));
     const filename=join(directory,'history.sqlite');
-    const infrastructure=JSON.parse(await readFile(new URL('../../dem/etc/dem-schema.json',import.meta.url),'utf8'));
+    const infrastructure=JSON.parse(await readFile(new URL('../etc/dem-schema.json',import.meta.resolve('@teqfw/dem/conformance')),'utf8'));
     const schemas=[
         {packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}},
         {packageName:'@teqfw/dem',filename:'etc/dem-schema.json',document:infrastructure},
@@ -95,7 +95,7 @@ test('schema creation is explicit and rejects an existing target', async () => {
 
 test('unsupported model is rejected before database effects', async () => {
     const c = new Container();
-    c.addNamespaceRoot('TeqFw_Dem_', new URL('../../dem/src', import.meta.url).pathname, '.mjs');
+    c.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/conformance')).pathname, '.mjs');
     c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
@@ -139,8 +139,8 @@ test('canonical nested Format 2 paths resolve', async () => {
 test('CFG, real DI routing and independent Providers share owned Connections safely', async()=>{
     const c=new Container({
         namespaces:[
-            {prefix:'TeqFw_Cfg_',target:new URL('../../cfg/src',import.meta.url).pathname,defaultExt:'.mjs'},
-            {prefix:'TeqFw_Dem_',target:new URL('../../dem/src',import.meta.url).pathname,defaultExt:'.mjs'},
+            {prefix:'TeqFw_Cfg_',target:new URL('.',import.meta.resolve('@teqfw/cfg/src/Loader.mjs')).pathname,defaultExt:'.mjs'},
+            {prefix:'TeqFw_Dem_',target:new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,defaultExt:'.mjs'},
             {prefix:'TeqFw_Dem_RDb_',target:new URL('../src',import.meta.url).pathname,defaultExt:'.mjs'},
             {prefix:'Test_',target:new URL('./fixture',import.meta.url).pathname,defaultExt:'.mjs'},
         ],
@@ -256,7 +256,7 @@ test('DI routing rejects an unmatched repository consumer',async()=>{
 
 test('partial connection bootstrap failure disconnects every resolved Connection',async()=>{
     const c=new Container({namespaces:[
-        {prefix:'TeqFw_Cfg_',target:new URL('../../cfg/src',import.meta.url).pathname,defaultExt:'.mjs'},
+        {prefix:'TeqFw_Cfg_',target:new URL('.',import.meta.resolve('@teqfw/cfg/src/Loader.mjs')).pathname,defaultExt:'.mjs'},
         {prefix:'TeqFw_Dem_RDb_',target:new URL('../src',import.meta.url).pathname,defaultExt:'.mjs'},
         {prefix:'Test_',target:new URL('./fixture',import.meta.url).pathname,defaultExt:'.mjs'},
     ]});

@@ -2,51 +2,90 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
 import {readFile} from 'node:fs/promises';
-import {register} from '../../../dem/conformance/Repository.mjs';
-import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '../../../dem/conformance/Values.mjs';
+import {register} from '@teqfw/dem/conformance';
+import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 import {randomBytes} from 'node:crypto';
 
-const connection = {host:process.env.TEQFW_DB__PG_HOST,port:Number(process.env.TEQFW_DB__PG_PORT),user:process.env.TEQFW_DB__PG_USER,password:process.env.TEQFW_DB__PG_PASSWORD,database:process.env.TEQFW_DB__PG_DATABASE};
-if (Object.values(connection).some(value => !value)) throw new Error('PostgreSQL test connection environment is incomplete.');
+const connection = {
+    ...(process.env.TEQFW_DB__PG_HOST ? {host:process.env.TEQFW_DB__PG_HOST} : {}),
+    ...(process.env.TEQFW_DB__PG_PORT ? {port:Number(process.env.TEQFW_DB__PG_PORT)} : {}),
+    ...(process.env.TEQFW_DB__PG_USER ? {user:process.env.TEQFW_DB__PG_USER} : {}),
+    ...(process.env.TEQFW_DB__PG_PASSWORD ? {password:process.env.TEQFW_DB__PG_PASSWORD} : {}),
+    ...(process.env.TEQFW_DB__PG_DATABASE ? {database:process.env.TEQFW_DB__PG_DATABASE} : {}),
+};
 function container() {
     const result = new Container();
     result.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
     return result;
 }
-async function open({schema,map,schemas,trustedPackages=[],createSchema=true,createNamespace=true,namespace='dem_rdb_test_' + randomBytes(8).toString('hex'),preserveSchema=false}) {
+async function open({schema,map,schemas,trustedPackages=[],createSchema=true,createNamespace=true,ownsNamespace=createNamespace,namespace='dem_rdb_test_' + randomBytes(8).toString('hex')}) {
     const adminContainer=container();
     const adminConnection=await adminContainer.get('TeqFw_Dem_RDb_Connection$');
-    await adminConnection.init({client:'pg',connection,pool:{min:0,max:1}});
-    const admin=adminConnection.getClient();
-    if (createNamespace) await admin.schema.createSchema(namespace);
-    const ownedContainer=container();
-    const ownedConnection=await ownedContainer.get('TeqFw_Dem_RDb_Connection$');
-    await ownedConnection.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:3}});
-    const db=ownedConnection.getClient();
+    let admin;
+    let adminReady=false;
+    let namespaceOwned=!createNamespace && ownsNamespace;
+    let ownedConnection;
+    let provider;
     try {
+        await adminConnection.init({client:'pg',connection,pool:{min:0,max:1}});
+        admin=adminConnection.getClient();
+        adminReady=true;
+        if (createNamespace) {
+            await admin.schema.createSchema(namespace);
+            namespaceOwned=true;
+        }
+        const ownedContainer=container();
+        ownedConnection=await ownedContainer.get('TeqFw_Dem_RDb_Connection$');
+        await ownedConnection.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:3}});
+        const db=ownedConnection.getClient();
         const c = new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',new URL('../../../dem/src',import.meta.url).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const compilation = await compiler.exec({schemas:schemas ?? [{packageName:'test',filename:'schema.json',document:schema}],...(trustedPackages.length ? {trustedPackages} : {}),...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         const {model} = compilation;
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        const provider = await adapter.open({model,connection:ownedConnection});
+        provider = await adapter.open({model,connection:ownedConnection});
         if (createSchema) await provider.createSchema();
-        return {provider,model,compilation,compiler,adapter,connection:ownedConnection,db,namespace,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{await provider.close();await ownedConnection.disconnect();if (!preserveSchema) await admin.schema.dropSchemaIfExists(namespace,true);await adminConnection.disconnect();}};
-    } catch (error) { await ownedConnection.disconnect(); await admin.schema.dropSchemaIfExists(namespace,true); await adminConnection.disconnect(); throw error; }
+        return {
+            provider,model,compilation,compiler,adapter,connection:ownedConnection,db,namespace,
+            selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),
+            close:async({preserveSchema=false}={})=>{
+                try { await provider.close(); }
+                finally {
+                    try { await ownedConnection.disconnect(); }
+                    finally {
+                        try { if (namespaceOwned && !preserveSchema) await admin.schema.dropSchemaIfExists(namespace,true); }
+                        finally { await adminConnection.disconnect(); }
+                    }
+                }
+            },
+        };
+    } catch (error) {
+        try { if (provider) await provider.close(); }
+        finally {
+            try { if (ownedConnection) await ownedConnection.disconnect(); }
+            finally {
+                try { if (namespaceOwned && adminReady) await admin.schema.dropSchemaIfExists(namespace,true); }
+                finally { await adminConnection.disconnect(); }
+            }
+        }
+        throw error;
+    }
 }
 register({test,assert,open});
 
 test('PostgreSQL initializes confirmed DEM history, persists CRUD and Batch, and rejects a changed model', async () => {
-    const infrastructure=JSON.parse(await readFile(new URL('../../../dem/etc/dem-schema.json',import.meta.url),'utf8'));
+    const infrastructure=JSON.parse(await readFile(new URL('../etc/dem-schema.json',import.meta.resolve('@teqfw/dem/conformance')),'utf8'));
     const schemas=[
         {packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}},
         {packageName:'@teqfw/dem',filename:'etc/dem-schema.json',document:infrastructure},
     ];
-    const first=await open({schemas,trustedPackages:['@teqfw/dem'],createSchema:false,preserveSchema:true});
+    let first;
+    let reopened;
     try {
+        first=await open({schemas,trustedPackages:['@teqfw/dem'],createSchema:false});
         const initial=await first.provider.initialize({scope:'pg-e2e',compilation:first.compilation});
         assert.equal(initial.created,true);
         assert.equal(initial.application.scope,'pg-e2e');
@@ -82,10 +121,10 @@ test('PostgreSQL initializes confirmed DEM history, persists CRUD and Batch, and
         assert.equal((await repo.read({key:{kind:'primary',values:{id:saved.id}}})).record.name,'Ada');
         const batch=await first.provider.execute({operations:[{path:'/app/item',method:'list',params:{selection:{}}}]});
         assert.deepEqual(batch.results[0],{records:[saved]});
-    } finally {await first.close();}
-
-    const reopened=await open({schemas,trustedPackages:['@teqfw/dem'],createSchema:false,createNamespace:false,namespace:first.namespace});
-    try {
+        const namespace=first.namespace;
+        await first.close({preserveSchema:true});
+        first=undefined;
+        reopened=await open({schemas,trustedPackages:['@teqfw/dem'],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
         const history=await reopened.provider.initialize({scope:'pg-e2e',compilation:reopened.compilation});
         assert.equal(history.created,false);
         assert.equal(history.application.outcome,'confirmed');
@@ -103,7 +142,10 @@ test('PostgreSQL initializes confirmed DEM history, persists CRUD and Batch, and
         assert.deepEqual((await (await reopened.provider.get({path:'/app/item'})).list({selection:{}})).records,[{id:'1',name:'Ada'}]);
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/snapshot'})).list({selection:{}})).records,beforeSnapshots);
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,beforeApplications);
-    } finally {await reopened.close();}
+    } finally {
+        if (reopened) await reopened.close();
+        if (first) await first.close();
+    }
 });
 
 test('generated identity avoids an explicitly supplied identity', async () => {
@@ -172,18 +214,23 @@ test('long generated constraint names fail before schema creation', async () => 
     const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
     const connectionContainer=container();
     const conn=await connectionContainer.get('TeqFw_Dem_RDb_Connection$');
-    await conn.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:1}});
+    let namespaceCreated=false;
     try {
+        await conn.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:1}});
         await conn.getClient().schema.createSchema(namespace);
+        namespaceCreated=true;
         const c=new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',new URL('../../../dem/src',import.meta.url).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compilation=await (await c.get('TeqFw_Dem_Compile$')).exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
         const adapter=await c.get('TeqFw_Dem_RDb_Adapter$');
         await assert.rejects(adapter.open({model:compilation.model,connection:conn}),{code:'UNSUPPORTED'});
         assert.equal(await conn.getClient().schema.hasTable('vendor_feature_customer_identity_record'),false);
-    } finally { await conn.getClient().schema.dropSchemaIfExists(namespace,true); await conn.disconnect(); }
+    } finally {
+        try { if(namespaceCreated) await conn.getClient().schema.dropSchemaIfExists(namespace,true); }
+        finally { await conn.disconnect(); }
+    }
 });
 
 
