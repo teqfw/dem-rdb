@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
+
+const conformanceContainer = new Container();
+conformanceContainer.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/etc/dem-schema.json')).pathname, '.mjs');
+const {register} = await conformanceContainer.get('TeqFw_Dem_Conformance_Repository$');
+const {schema:valueSchema,map:valueMap,exercise} = await conformanceContainer.get('TeqFw_Dem_Conformance_Values$');
+const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer.get('TeqFw_Dem_Conformance_Atomic$');
+
 import knex from 'knex';
 import Connection from '../../src/Connection.mjs';
-import {register} from '@teqfw/dem/conformance';
-import {schema as valueSchema,map as valueMap,exercise,atomicSchema,exerciseAtomic} from '@teqfw/dem/conformance/values';
 import {randomBytes} from 'node:crypto';
 
 const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE};
@@ -16,7 +21,7 @@ async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberS
     const db=ownedConnection.getClient();
     try {
         const c = new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/etc/dem-schema.json')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
@@ -116,7 +121,7 @@ test('a failed schema creation removes tables created by the attempt', async () 
     try {
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
         const c = new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/conformance')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/etc/dem-schema.json')).pathname,'.mjs');
         c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
