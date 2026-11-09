@@ -1,6 +1,6 @@
 {
   "name": "@teqfw/dem-rdb",
-  "version": "0.3.0",
+  "version": "2.0.0",
   "description": "Relational persistence adapter for TeqFW Domain Entity Model.",
   "type": "module",
   "license": "Apache-2.0",
@@ -16,16 +16,15 @@
     "skills/"
   ],
   "scripts": {
-    "test": "npm run check:esm && find test/unit test/integration.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
+    "test": "find test/unit test/integration.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
     "verify": "npm test",
     "typecheck": "tsc -p jsconfig.json",
     "test:postgresql": "node --test test/optin/Postgresql.test.mjs",
-    "test:mariadb": "node --test test/optin/Mariadb.test.mjs",
-    "check:esm": "teqfw-esm-validator src --profile base"
+    "test:mariadb": "node --test test/optin/Mariadb.test.mjs"
   },
   "dependencies": {
     "@teqfw/cfg": "^2.0.0",
-    "@teqfw/dem": "^0.4.0",
+    "@teqfw/dem": "^2.0.0",
     "knex": "^3.1.0"
   },
   "peerDependencies": {
@@ -36,8 +35,7 @@
     "typescript": "^5.9.3",
     "@types/node": "^22.20.5",
     "pg": "^8.23.1",
-    "mysql2": "^3.24.5",
-    "@flancer32/skill-teqfw-esm-validator": "^0.15.2"
+    "mysql2": "^3.24.5"
   },
   "teqfw": {
     "fw": {

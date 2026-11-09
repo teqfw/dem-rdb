@@ -1,14 +1,14 @@
+import {demNamespace, acquireDemSchema} from '../fixture/Dem/Discovery.mjs';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
 
 const conformanceContainer = new Container();
-conformanceContainer.addNamespaceRoot('TeqFw_Dem_', new URL('../src', import.meta.resolve('@teqfw/dem/etc/dem-schema.json')).pathname, '.mjs');
+conformanceContainer.addNamespaceRoot('TeqFw_Dem_', demNamespace.dirAbs, '.mjs');
 const {register} = await conformanceContainer.get('TeqFw_Dem_Conformance_Repository$');
 const {schema:valueSchema,map:valueMap,exercise} = await conformanceContainer.get('TeqFw_Dem_Conformance_Values$');
 const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer.get('TeqFw_Dem_Conformance_Atomic$');
 
-import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
 
 const connection = {
@@ -44,7 +44,7 @@ async function open({schema,map,schemas,trustedPackages=[],createSchema=true,cre
         await ownedConnection.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:3}});
         const db=ownedConnection.getClient();
         const c = new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/etc/dem-schema.json')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
         c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
@@ -82,10 +82,10 @@ async function open({schema,map,schemas,trustedPackages=[],createSchema=true,cre
 register({test,assert,open});
 
 test('PostgreSQL initializes confirmed DEM history, persists CRUD and Batch, and rejects a changed model', async () => {
-    const infrastructure=JSON.parse(await readFile(new URL('../etc/dem-schema.json',import.meta.resolve('@teqfw/dem/etc/dem-schema.json')),'utf8'));
+    const infrastructure = await acquireDemSchema(conformanceContainer);
     const schemas=[
         {packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}},
-        {packageName:'@teqfw/dem',filename:'etc/dem-schema.json',document:infrastructure},
+        infrastructure,
     ];
     let first;
     let reopened;
@@ -225,7 +225,7 @@ test('long generated constraint names fail before schema creation', async () => 
         await conn.getClient().schema.createSchema(namespace);
         namespaceCreated=true;
         const c=new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',new URL('../src',import.meta.resolve('@teqfw/dem/etc/dem-schema.json')).pathname,'.mjs');
+        c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
         c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compilation=await (await c.get('TeqFw_Dem_Compile$')).exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});

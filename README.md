@@ -5,11 +5,11 @@ Relational persistence for `@teqfw/dem`. The host composes and compiles the Effe
 ## Installation and host composition
 
 ```sh
-npm install @teqfw/dem@^0.4.0 @teqfw/dem-rdb@^0.3.0 @teqfw/di@^2.11.0 sqlite3
+npm install @teqfw/dem@^2.0.0 @teqfw/dem-rdb@^2.0.0 @teqfw/di@^2.11.0 sqlite3
 # For PostgreSQL install pg instead; for MariaDB install mysql2 instead.
 ```
 
-Version 0.3.x requires DEM 0.4.x and Format 2 schema descriptors. It changes the
+Version 2.x requires DEM 2.x and Format 2 schema descriptors. It changes the
 0.2.x physical layout and connection composition; existing databases require an
 explicit host-managed migration. The host installs the selected Knex driver.
 Register `TeqFw_Cfg_`, load the selected CFG sources with `TeqFw_Cfg_Loader$`
@@ -42,6 +42,6 @@ The adapter supports SQLite, PostgreSQL and MariaDB through Knex. It implements 
 
 The Provider opens lazily, caches its backend and borrows the DI-selected Connection. Its `initialize({scope, compilation})` confirms model history before `get` or `execute` can access a history-managed model. Models without DEM history keep direct repository access. Closing a backend invalidates its repositories without disconnecting a shared Connection. Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. The host initializes storage before resolving application consumers.
 
-Run `npm run verify` for ESM validation and package tests. `npm run typecheck` remains available as an optional command. The integration suite uses real isolated SQLite storage for table creation, repository behavior, constraints and initial history. The optional PostgreSQL and MariaDB suites require separately configured disposable databases; SQLite results do not establish their conformance.
+Run `npm run verify` for package tests. Agents validate source conventions separately using the locally installed `teqfw-esm-validator` skill and CLI; this tool is not a project dependency or CI gate. `npm run typecheck` remains available as an optional command. The integration suite uses real isolated SQLite storage for table creation, repository behavior, constraints and initial history. The optional PostgreSQL and MariaDB suites require separately configured disposable databases; SQLite results do not establish their conformance.
 
 The cognitive context is an independent private repository excluded from the npm artifact. Maintainers can mount it at `ctx/` and validate it with `adsm-ctx validate .`.
