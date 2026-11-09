@@ -1,12 +1,9 @@
 # Release Notes
 
-## Unreleased
+## 0.3.0 — Release candidate
 
-- Replace native and portable layouts with one DEM-derived relational projection
-  and add initial confirmed model history for empty SQLite storage scopes.
-- Let DEM-RDB resolve and own its Knex client through its DI-managed Connection.
-- Align schema descriptors and conformance tests with DEM Format 2 and use the
-  current GitHub source for the DEM dependency.
+- Require DEM ^0.4.0 and Format 2 schemas.
+- Use DEM-derived tables, DI-managed connections and initial model history; host migration is required for prior layouts.
 
 ## 0.2.0 — 2026-11-02
 

@@ -2,6 +2,21 @@
 
 Relational persistence for `@teqfw/dem`. The host composes and compiles the Effective DEM, loads CFG and selects a DI-managed Connection. DEM-RDB owns Knex: its Config reads connection settings and its Connection creates and destroys the client.
 
+## Installation and host composition
+
+```sh
+npm install @teqfw/dem@^0.4.0 @teqfw/dem-rdb@^0.3.0 @teqfw/di@^2.11.0 sqlite3
+# For PostgreSQL install pg instead; for MariaDB install mysql2 instead.
+```
+
+Version 0.3.x requires DEM 0.4.x and Format 2 schema descriptors. It changes the
+0.2.x physical layout and connection composition; existing databases require an
+explicit host-managed migration. The host installs the selected Knex driver.
+Register `TeqFw_Cfg_`, load the selected CFG sources with `TeqFw_Cfg_Loader$`
+before resolving RDB Config, and supply the `TEQFW_DEM_RDB` fragment for the
+selected connection. The host owns storage initialization and connection shutdown.
+See [CFG host setup](https://github.com/teqfw/cfg#quick-start) for source loading.
+
 Register `TeqFw_Dem_RDb_` to this package's `src/`, `TeqFw_Cfg_` to CFG and `TeqFw_Dem_` to DEM. Compile the application descriptors together with the selected `@teqfw/dem` infrastructure descriptor, then initialize the selected storage scope:
 
 ```js
