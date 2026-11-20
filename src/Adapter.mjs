@@ -33,6 +33,29 @@ export default class Adapter {
          * @returns {string}
          */
         const table = path => path.slice(1).replaceAll('/', '_');
+        /** @param {string} path @param {string} attribute @returns {string} */
+        const enumConstraint = (path,attribute) => `${table(path)}_e_${attribute}`;
+        /** @param {string} sql @returns {number} */
+        const countSqlChecks = sql => {
+            let count=0,quote=null;
+            for (let i=0;i<sql.length;i++) {
+                const ch=sql[i];
+                if (quote) {
+                    if (quote==='[' && ch===']') quote=null;
+                    else if (ch===quote) {
+                        if ((quote==="'" || quote==='"' || quote==='`') && sql[i+1]===quote) i++;
+                        else quote=null;
+                    }
+                    continue;
+                }
+                if (ch==="'" || ch==='"' || ch==='`' || ch==='[') {quote=ch;continue;}
+                if (sql.slice(i,i+5).toLowerCase()==='check' && !/[a-z0-9_]/i.test(sql[i+5] ?? '')) {
+                    if (i===0 || !/[a-z0-9_]/i.test(sql[i-1])) count++;
+                    i+=4;
+                }
+            }
+            return count;
+        };
         /**
          * @param {any} error
          */
@@ -63,20 +86,44 @@ export default class Adapter {
             const rows = await trx.raw('PRAGMA foreign_keys');
             if (Number(rows?.[0]?.foreign_keys) !== 1) fail('UNSUPPORTED', 'SQLite foreign key enforcement is disabled.');
         };
+        /** @param {any} trx @returns {Promise<void>} */
+        const ensureEnumChecks = async trx => {
+            const rows=await trx.raw('PRAGMA ignore_check_constraints');
+            if (Number(rows?.[0]?.ignore_check_constraints)!==0) fail('UNSUPPORTED','SQLite CHECK constraint enforcement is disabled.');
+        };
+        /** @param {any} trx @returns {Promise<void>} */
+        const ensureMariaEnumChecks = async trx => {
+            let rows;
+            try { [rows]=await trx.raw('SELECT @@check_constraint_checks AS enabled'); }
+            catch { fail('UNSUPPORTED','MariaDB CHECK constraint enforcement is unavailable.'); }
+            if (Number(rows?.[0]?.enabled)!==1) fail('UNSUPPORTED','MariaDB CHECK constraint enforcement is disabled.');
+        };
+        /** @param {string} value @returns {string} */
+        const mariaLiteral = value => `'${value.replaceAll('\\','\\\\').replaceAll('\0','\\0').replaceAll('\n','\\n').replaceAll('\r','\\r').replaceAll('\x1a','\\Z').replaceAll("'","\\'")}'`;
         /**
          * @param {any} entity
          * @param {any} row
+         * @param {Record<string, boolean>} [nativeVectors]
          * @returns {any}
          */
-        const fromDb = (entity,row) => codec.decode(entity,row && !Object.hasOwn(row,'__proto__') && Object.hasOwn(row,'$dem_proto') ? Object.fromEntries([...Object.entries(row),['__proto__',row.$dem_proto]]) : row);
+        const fromDb = (entity,row,nativeVectors={}) => codec.decode(entity,row && !Object.hasOwn(row,'__proto__') && Object.hasOwn(row,'$dem_proto') ? Object.fromEntries([...Object.entries(row),['__proto__',row.$dem_proto]]) : row,nativeVectors);
         /**
          * @param {any} entity
          * @param {any} record
          * @param {boolean} pg
          * @param {boolean} mysql
+         * @param {Record<string, boolean>} [nativeVectors]
          * @returns {any}
          */
-        const toDb = (entity,record,pg,mysql) => codec.encode({entity,record,dialect:pg ? 'pg' : mysql ? 'mysql2' : 'sqlite3'});
+        const toDb = (entity,record,pg,mysql,nativeVectors={}) => codec.encode({entity,record,dialect:pg ? 'pg' : mysql ? 'mysql2' : 'sqlite3',nativeVectors});
+        /** @param {any} foreignKeyActions @param {string} path @param {string} relation @param {string} event @returns {string} */
+        const expectedForeignAction = (foreignKeyActions,path,relation,event) => {
+            const relations=Object.hasOwn(foreignKeyActions,path) ? foreignKeyActions[path] : null;
+            const actions=relations && Object.hasOwn(relations,relation) ? relations[relation] : null;
+            return actions && Object.hasOwn(actions,event) ? actions[event] : 'DEFAULT';
+        };
+        /** @param {string} action @returns {string} */
+        const normalizedForeignAction = action => ['NO ACTION','RESTRICT'].includes(action) ? 'DEFAULT' : action;
         /**
          * @param {any} entity
          * @param {any} connection
@@ -95,9 +142,10 @@ export default class Adapter {
          * @param {any} deps.knex
          * @param {string} deps.path
          * @param {any} deps.entity
+         * @param {any} [deps.foreignKeyActions]
          * @returns {Promise<void>}
          */
-        const validateMariadb = async function ({knex, path, entity}) {
+        const validateMariadb = async function ({knex, path, entity, foreignKeyActions={}}) {
             const name = table(path);
             const [tables] = await knex.raw('SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?', [name]);
             if (tables.length !== 1 || tables[0].engine !== 'InnoDB') fail('UNSUPPORTED','MariaDB table must use InnoDB.');
@@ -133,21 +181,34 @@ export default class Adapter {
             const actualRelations = [];
             for (const relationName of new Set(relations.map(r=>r.name))) {
                 const group = relations.filter(r=>r.name===relationName);
-                if (group.some(r=>!['NO ACTION','RESTRICT'].includes(r.on_update) || !['NO ACTION','RESTRICT'].includes(r.on_delete) || r.target_schema !== r.active_schema)) fail('UNSUPPORTED','Unsupported foreign key behavior.');
-                actualRelations.push(JSON.stringify([group[0].target_table,group.map(r=>r.local_name),group.map(r=>r.target_name)]));
+                if (group.some(r=>r.target_schema !== r.active_schema)) fail('UNSUPPORTED','Foreign keys must target the active database schema.');
+                actualRelations.push(JSON.stringify([group[0].target_table,group.map(r=>r.local_name),group.map(r=>r.target_name),normalizedForeignAction(group[0].on_update),normalizedForeignAction(group[0].on_delete)]));
             }
-            const expectedRelations = Object.values(entity.relations).map(r=>JSON.stringify([table(r.target.path),r.attributes,r.target.attributes])).sort();
+            const expectedRelations = Object.entries(entity.relations).map(([relationName,r])=>JSON.stringify([table(r.target.path),r.attributes,r.target.attributes,expectedForeignAction(foreignKeyActions,path,relationName,'onUpdate'),expectedForeignAction(foreignKeyActions,path,relationName,'onDelete')])).sort();
             if (JSON.stringify(actualRelations.sort()) !== JSON.stringify(expectedRelations)) fail('UNSUPPORTED','Database relations do not match the effective model.');
+            const enumAttributes=entity.attributes.filter(attribute=>attribute.type.name==='enum');
+            const [checks]=await knex.raw(`SELECT CONSTRAINT_NAME AS name,CHECK_CLAUSE AS clause FROM information_schema.CHECK_CONSTRAINTS
+                WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME=? AND LEVEL='Table'`,[name]);
+            if (checks.length!==enumAttributes.length) fail('UNSUPPORTED','Database enum checks do not match the effective model.');
+            for (const attribute of enumAttributes) {
+                const check=checks.find(item=>item.name===enumConstraint(path,attribute.name));
+                const expected=`\`${attribute.name.replaceAll('`','``')}\` IN (${attribute.type.params.values.map(mariaLiteral).join(',')})`;
+                /** @param {string} value @returns {string} */
+                const normalize=value=>String(value).toLowerCase().replaceAll(/\s+/g,'');
+                if (!check || normalize(check.clause)!==normalize(expected)) fail('UNSUPPORTED','Database enum check does not match the declared alternatives.');
+            }
         };
         /**
          * @param {object} deps
          * @param {any} deps.knex
          * @param {string} deps.path
          * @param {any} deps.entity
+         * @param {Record<string, boolean>} [deps.nativeVectors]
+         * @param {any} [deps.foreignKeyActions]
          * @returns {Promise<void>}
          */
-        const validatePostgresql = async function ({knex, path, entity}) {
-            const columns = (await knex.raw(`SELECT a.attname AS name, format_type(a.atttypid,a.atttypmod) AS type,
+        const validatePostgresql = async function ({knex, path, entity, nativeVectors={}, foreignKeyActions={}}) {
+            const columns = (await knex.raw(`SELECT a.attname AS name, quote_ident(a.attname) AS quoted_name, format_type(a.atttypid,a.atttypmod) AS type,
                 a.attnotnull AS required, COALESCE(array_position(p.conkey,a.attnum),0) AS pk,
                 coll.collname AS collation, n.nspname AS schema
                 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
@@ -159,8 +220,22 @@ export default class Adapter {
             if (columns.length !== entity.attributes.length || JSON.stringify(primary) !== JSON.stringify(entity.primaryKey ?? [])) fail('UNSUPPORTED','Database table does not match the effective model.');
             for (const attribute of entity.attributes) {
                 const column = columns.find(c=>c.name===attribute.name);
-                const type = codec.type({attribute,dialect:'pg',indexed:codec.indexed(entity,attribute.name)});
+                const nativeVector=Object.hasOwn(nativeVectors,attribute.name) && nativeVectors[attribute.name]===true;
+                const type = codec.type({attribute,dialect:'pg',indexed:codec.indexed(entity,attribute.name),nativeVector});
                 if (!column || column.type !== type || Boolean(column.required) === Boolean(attribute.nullable) || (type === 'text' && column.collation !== 'C')) fail('UNSUPPORTED','Database column does not match the effective model.');
+            }
+            const enumAttributes=entity.attributes.filter(attribute=>attribute.type.name==='enum');
+            const checks=(await knex.raw(`SELECT c.conname AS name,c.convalidated AS validated,pg_get_constraintdef(c.oid) AS definition
+                FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+                WHERE ns.nspname=current_schema() AND rel.relname=? AND c.contype='c'`,[table(path)])).rows;
+            if (checks.length!==enumAttributes.length) fail('UNSUPPORTED','Database enum checks do not match the effective model.');
+            for (const attribute of enumAttributes) {
+                const name=enumConstraint(path,attribute.name);
+                const check=checks.find(item=>item.name===name);
+                const column=columns.find(item=>item.name===attribute.name);
+                const values=attribute.type.params.values.map(value=>`'${value.replaceAll("'","''")}'::text`).join(', ');
+                const expected=`CHECK ((${column.quoted_name} = ANY (ARRAY[${values}])))`;
+                if (!check || !check.validated || check.definition!==expected) fail('UNSUPPORTED','Database enum check does not match the declared alternatives.');
             }
             const extraIndexes = (await knex.raw(`SELECT i.indexrelid FROM pg_index i
                 JOIN pg_class rel ON rel.oid=i.indrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace
@@ -177,9 +252,11 @@ export default class Adapter {
             const expectedUnique = Object.values(entity.uniqueKeys).map(v=>JSON.stringify(v)).sort();
             if (JSON.stringify(unique)!==JSON.stringify(expectedUnique)) fail('UNSUPPORTED','Database uniqueness does not match the effective model.');
             const foreign = constraints.filter(c=>c.contype==='f');
-            if (foreign.some(c=>!['a','r'].includes(c.confupdtype) || !['a','r'].includes(c.confdeltype) || c.target_schema !== columns[0]?.schema)) fail('UNSUPPORTED','Cascading relations are unsupported.');
-            const actual = foreign.map(c=>JSON.stringify([c.target,c.local_columns,c.target_columns])).sort();
-            const expected = Object.values(entity.relations).map(r=>JSON.stringify([table(r.target.path),r.attributes,r.target.attributes])).sort();
+            /** @param {string} code @returns {string} */
+            const pgAction = code => code==='a' || code==='r' ? 'DEFAULT' : code==='c' ? 'CASCADE' : code;
+            if (foreign.some(c=>c.target_schema !== columns[0]?.schema)) fail('UNSUPPORTED','Foreign keys must target the active database schema.');
+            const actual = foreign.map(c=>JSON.stringify([c.target,c.local_columns,c.target_columns,pgAction(c.confupdtype),pgAction(c.confdeltype)])).sort();
+            const expected = Object.entries(entity.relations).map(([relationName,r])=>JSON.stringify([table(r.target.path),r.attributes,r.target.attributes,expectedForeignAction(foreignKeyActions,path,relationName,'onUpdate'),expectedForeignAction(foreignKeyActions,path,relationName,'onDelete')])).sort();
             if (JSON.stringify(actual)!==JSON.stringify(expected)) fail('UNSUPPORTED','Database relations do not match the effective model.');
         };
         /**
@@ -188,9 +265,36 @@ export default class Adapter {
          */
         this.open = async function (options) {
             if (!options || typeof options !== 'object' || Array.isArray(options)
-                || Object.keys(options).some(key => !['model','connection','runtime'].includes(key))
+                || Object.keys(options).some(key => !['model','connection','runtime','nativeVectors','foreignKeyActions'].includes(key))
                 || !Object.hasOwn(options, 'model') || !Object.hasOwn(options, 'connection')) fail('INVALID_INPUT','A model and DEM-RDB Connection are required.');
             const {model, connection, runtime}=options;
+            const nativeVectors=options.nativeVectors ?? {};
+            const foreignKeyActions=options.foreignKeyActions ?? {};
+            if (!foreignKeyActions || typeof foreignKeyActions!=='object' || Array.isArray(foreignKeyActions)) fail('INVALID_INPUT','Foreign-key actions must be an object.');
+            for (const [path,relations] of Object.entries(foreignKeyActions)) {
+                const entity=model?.entities?.[path];
+                if (!entity || !relations || typeof relations!=='object' || Array.isArray(relations) || !Object.keys(relations).length)
+                    fail('UNSUPPORTED','Foreign-key action selection does not match the Effective DEM.');
+                for (const [name,actions] of Object.entries(relations)) {
+                    if (!Object.hasOwn(entity.relations,name)) fail('UNSUPPORTED','Foreign-key action selection does not match the Effective DEM.');
+                    if (!actions || typeof actions!=='object' || Array.isArray(actions) || !Object.keys(actions).length
+                        || Object.keys(actions).some(key=>!['onDelete','onUpdate'].includes(key))
+                        || Object.values(actions).some(value=>value!=='CASCADE')) fail('INVALID_INPUT','Foreign-key actions may select CASCADE for onDelete or onUpdate.');
+                }
+            }
+            if (!nativeVectors || typeof nativeVectors!=='object' || Array.isArray(nativeVectors)) fail('INVALID_INPUT','Native vector selection must be an object.');
+            for (const [path,attributes] of Object.entries(nativeVectors)) {
+                const entity=model?.entities?.[path];
+                if (!entity || !attributes || typeof attributes!=='object' || Array.isArray(attributes) || !Object.keys(attributes).length)
+                    fail('UNSUPPORTED','Native vector selection does not match the Effective DEM.');
+                for (const name of Object.keys(attributes)) {
+                    if (attributes[name] !== true) fail('INVALID_INPUT','Native vector selection values must be true.');
+                    const attribute=entity.attributes.find(item=>item.name===name);
+                    if (!attribute || attribute.type.name!=='vector' || attribute.type.params?.element!=='float' || attribute.type.params?.sparse
+                        || !Number.isSafeInteger(attribute.type.params?.dimensions) || attribute.type.params.dimensions<1)
+                        fail('UNSUPPORTED','Native storage supports only dense float vector attributes.');
+                }
+            }
             const historyManaged = Boolean(model?.entities?.['/dem/snapshot'] || model?.entities?.['/dem/application']);
             if (typeof connection?.getClient !== 'function') fail('INVALID_INPUT','A ready DEM-RDB Connection is required.');
             const knex = connection.getClient();
@@ -198,6 +302,7 @@ export default class Adapter {
             /** @param {any} value @returns {string} */
             const canonical=value=>JSON.stringify(value,(_key,item)=>item && typeof item==='object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(key=>[key,item[key]])) : item);
             const hasExtensions=Object.values(model.entities).some(entity=>entity.attributes.some(attribute=>attribute.type.name.includes('.')));
+            const hasEnums=Object.values(model.entities).some(entity=>entity.attributes.some(attribute=>attribute.type.name==='enum'));
             if (runtime && canonical(runtime.model)!==canonical(model)) fail('INVALID_INPUT','The DEM Runtime is bound to a different Effective DEM.');
             if (runtime && (!runtime.normalize || typeof runtime.normalize.value!=='function' || typeof runtime.normalize.record!=='function' || typeof runtime.normalize.key!=='function'
                 || typeof runtime.selection?.create!=='function' || typeof runtime.select?.exec!=='function'
@@ -220,6 +325,7 @@ export default class Adapter {
             let initialized=!historyManaged || options[historyAccess] === true;
             const pg = knex.client.config.client === 'pg';
             const mysql = knex.client.config.client === 'mysql2';
+            if (!pg && Object.values(nativeVectors).some(attributes=>Object.keys(attributes).length)) fail('UNSUPPORTED','Native vector storage requires PostgreSQL.');
             const deferredForeign = pg || mysql;
             const maxIdentifier = pg ? 63 : mysql ? 64 : 255;
             const tables = Object.keys(model.entities).map(table);
@@ -227,7 +333,7 @@ export default class Adapter {
             if (tables.some(name => Buffer.byteLength(name) > maxIdentifier)
                 || Object.values(model.entities).some(entity => entity.attributes.some(a => Buffer.byteLength(a.name) > maxIdentifier))) fail('UNSUPPORTED', 'Relational identifier exceeds supported limits.');
             for (const [path,entity] of Object.entries(model.entities)) {
-                const names=[...Object.keys(entity.uniqueKeys).map(name=>`${table(path)}_u_${name}`),...Object.keys(entity.indexes).map(name=>`${table(path)}_i_${name}`),...Object.values(entity.relations).map((_,index)=>`${table(path)}_f_${index}`)];
+                const names=[...Object.keys(entity.uniqueKeys).map(name=>`${table(path)}_u_${name}`),...Object.keys(entity.indexes).map(name=>`${table(path)}_i_${name}`),...Object.values(entity.relations).map((_,index)=>`${table(path)}_f_${index}`),...entity.attributes.filter(attribute=>attribute.type.name==='enum').map(attribute=>enumConstraint(path,attribute.name))];
                 if (names.some(name=>Buffer.byteLength(name)>maxIdentifier)) fail('UNSUPPORTED','Generated relational constraint name exceeds supported limits.');
             }
             if (!deferredForeign && knex.client.config.pool?.max !== 1) fail('UNSUPPORTED', 'SQLite requires a single connection pool.');
@@ -238,12 +344,22 @@ export default class Adapter {
                 }
             }
             try {
-                if (!deferredForeign) await knex.raw('PRAGMA foreign_keys = ON');
+                if (!deferredForeign) {
+                    await knex.raw('PRAGMA foreign_keys = ON');
+                    if (hasEnums) await ensureEnumChecks(knex);
+                }
                 else if (mysql) {
                     const [rows] = await knex.raw('SELECT @@innodb_page_size AS page_size, @@sql_mode AS sql_mode, @@foreign_key_checks AS foreign_keys');
                     if (Number(rows[0].page_size) !== 16384 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].sql_mode)) || Number(rows[0].foreign_keys) !== 1) fail('UNSUPPORTED', 'MariaDB requires strict mode, foreign keys and 16 KiB InnoDB pages.');
+                    if (hasEnums) await ensureMariaEnumChecks(knex);
                 }
-                else if ((await knex.raw("SHOW server_encoding")).rows[0].server_encoding !== 'UTF8') fail('UNSUPPORTED', 'PostgreSQL requires UTF8 encoding.');
+                else {
+                    if ((await knex.raw("SHOW server_encoding")).rows[0].server_encoding !== 'UTF8') fail('UNSUPPORTED', 'PostgreSQL requires UTF8 encoding.');
+                    if (Object.values(nativeVectors).some(attributes=>Object.keys(attributes).length)) {
+                        const available=(await knex.raw("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector') AND to_regtype('vector') IS NOT NULL AS available")).rows[0]?.available;
+                        if (!available) fail('UNSUPPORTED','PostgreSQL vector extension is not installed or visible in this database scope.');
+                    }
+                }
             } catch (e) { mapError(e); }
             /**
              * @param {any} params
@@ -257,8 +373,8 @@ export default class Adapter {
                 const entity = model.entities[path];
                 if (!entity) fail('NOT_FOUND', 'Entity not found.');
                 try {
-                    if (pg) await validatePostgresql({knex, path, entity});
-                    else if (mysql) await validateMariadb({knex, path, entity});
+                    if (pg) await validatePostgresql({knex, path, entity,nativeVectors:nativeVectors[path],foreignKeyActions});
+                    else if (mysql) await validateMariadb({knex, path, entity,foreignKeyActions});
                     else {
                     const columns = await knex.raw('SELECT name, type, "notnull" AS required, pk FROM pragma_table_info(?)', [table(path)]);
                     const primary = columns.filter(column => column.pk).sort((a, b) => a.pk - b.pk).map(column => column.name);
@@ -283,24 +399,33 @@ export default class Adapter {
                     const expectedUnique = Object.values(entity.uniqueKeys).map(key => JSON.stringify(key)).sort();
                     if (JSON.stringify(actualUnique.sort()) !== JSON.stringify(expectedUnique))
                         fail('UNSUPPORTED', 'Database uniqueness does not match the effective model.');
+                    const enumAttributes=entity.attributes.filter(attribute=>attribute.type.name==='enum');
+                    const tableDefinition=await knex('sqlite_master').select('sql').where({type:'table',name:table(path)}).first();
+                    const sql=String(tableDefinition?.sql ?? '');
+                    if (countSqlChecks(sql)!==enumAttributes.length) fail('UNSUPPORTED','Database enum checks do not match the effective model.');
+                    for (const attribute of enumAttributes) {
+                        const name=enumConstraint(path,attribute.name);
+                        const values=attribute.type.params.values.map(value=>`'${value.replaceAll("'","''")}'`).join(',');
+                        const expected=`constraint ${name} check (\`${attribute.name}\` in (${values}))`;
+                        if (!sql.includes(expected)) fail('UNSUPPORTED','Database enum check does not match the declared alternatives.');
+                    }
                     const foreignKeys = await knex.raw('SELECT id, seq, "table" AS target_table, "from" AS local_name, "to" AS target_name, on_update, on_delete FROM pragma_foreign_key_list(?) ORDER BY id, seq', [table(path)]);
                     const actualRelations = [];
                     for (const id of new Set(foreignKeys.map(key => key.id))) {
                         const group = foreignKeys.filter(key => key.id === id);
-                        if (group.some(key => !['NO ACTION','RESTRICT'].includes(key.on_update) || !['NO ACTION','RESTRICT'].includes(key.on_delete)))
-                            fail('UNSUPPORTED', 'Cascading relations are unsupported.');
-                        actualRelations.push(JSON.stringify([group[0].target_table, group.map(key => key.local_name), group.map(key => key.target_name)]));
+                        actualRelations.push(JSON.stringify([group[0].target_table, group.map(key => key.local_name), group.map(key => key.target_name),normalizedForeignAction(group[0].on_update),normalizedForeignAction(group[0].on_delete)]));
                     }
-                    const expectedRelations = Object.values(entity.relations).map(relation => JSON.stringify([table(relation.target.path), relation.attributes, relation.target.attributes])).sort();
+                    const expectedRelations = Object.entries(entity.relations).map(([relationName,relation]) => JSON.stringify([table(relation.target.path), relation.attributes, relation.target.attributes,expectedForeignAction(foreignKeyActions,path,relationName,'onUpdate'),expectedForeignAction(foreignKeyActions,path,relationName,'onDelete')])).sort();
                     if (JSON.stringify(actualRelations.sort()) !== JSON.stringify(expectedRelations))
                         fail('UNSUPPORTED', 'Database relations do not match the effective model.');
                     }
                 } catch (error) { mapError(error); }
+                const selectedVectors=nativeVectors[path] ?? {};
                 /**
                  * @param {any} input
                  * @returns {any}
                  */
-                const key = input => toDb(entity, norm.key({entity, key: input}).values, pg, mysql);
+                const key = input => toDb(entity, norm.key({entity, key: input}).values, pg, mysql,selectedVectors);
                 /**
                  * @returns {any}
                  */
@@ -309,16 +434,17 @@ export default class Adapter {
                  * @param {any} fn
                  * @returns {Promise<any>}
                  */
-                const wrap = async fn => { try { if (closed) fail('STORAGE','Provider is closed.'); return await fn(); } catch (e) { mapError(e); } };
+                const wrap = async fn => { try { if (closed) fail('STORAGE','Provider is closed.'); if (hasEnums && !deferredForeign) await ensureEnumChecks(knex); return await fn(); } catch (e) { mapError(e); } };
                 return {
                     create: async params => wrap(async () => {
                         shape(params, ['record']);
                         const logical = norm.record({entity,record:params.record,mode:'create'});
                         for (const a of entity.attributes) if (a.type.name==='identity' && a.type.profile.type==='uuid' && a.generation && !Object.hasOwn(logical,a.name)) Object.defineProperty(logical,a.name,{value:randomUUID(),enumerable:true,writable:true,configurable:true});
-                        const value = toDb(entity,logical,pg,mysql);
+                        const value = toDb(entity,logical,pg,mysql,selectedVectors);
                         return knex.transaction(async trx => {
                             if (!deferredForeign) await ensureForeignKeys(trx);
                             if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
+                            if (mysql && hasEnums) await ensureMariaEnumChecks(trx);
                             const generated = entity.attributes.find(a => a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation);
                             if (pg && generated) {
                                 await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [table(path)]);
@@ -338,16 +464,17 @@ export default class Adapter {
                                 return {record: fromDb(entity, value)};
                             }
                             const rows = await trx(table(path)).insert(value).returning(projection(entity,trx));
-                            return {record: fromDb(entity, rows[0])};
+                            return {record: fromDb(entity, rows[0],selectedVectors)};
                         });
                     }),
-                    read: async params => wrap(async () => { shape(params, ['key']); return {record: fromDb(entity, await query().where(key(params.key)).first())}; }),
+                    read: async params => wrap(async () => { shape(params, ['key']); return {record: fromDb(entity, await query().where(key(params.key)).first(),selectedVectors)}; }),
                     update: async params => wrap(async () => {
                         shape(params, ['key', 'changes']);
-                        const values = key(params.key), changes = toDb(entity, norm.record({entity, record:params.changes, mode:'update'}), pg, mysql);
+                        const values = key(params.key), changes = toDb(entity, norm.record({entity, record:params.changes, mode:'update'}), pg, mysql,selectedVectors);
                         return knex.transaction(async trx => {
                             if (!deferredForeign) await ensureForeignKeys(trx);
                             if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
+                            if (mysql && hasEnums) await ensureMariaEnumChecks(trx);
                             if (mysql) {
                                 const before = await trx(table(path)).select(projection(entity,trx)).where(values).forUpdate().first();
                                 if (!before) return {record:null};
@@ -355,7 +482,7 @@ export default class Adapter {
                                 return {record:fromDb(entity, {...before,...changes})};
                             }
                             const rows = await trx(table(path)).where(values).update(changes).returning(projection(entity,trx));
-                            return {record: fromDb(entity, rows[0])};
+                            return {record: fromDb(entity, rows[0],selectedVectors)};
                         });
                     }),
                     delete: async params => wrap(async () => { shape(params, ['key']); const values = key(params.key); return knex.transaction(async trx => { if (!deferredForeign) await ensureForeignKeys(trx);
@@ -364,7 +491,7 @@ export default class Adapter {
                         shape(params, ['selection']);
                         const s = selectionOps.create({entity, selection:params.selection});
                         if (entity.attributes.some(a=>mysql && codec.type({attribute:a,dialect:'mysql2',indexed:codec.indexed(entity,a.name)})==='longblob' || ['decimal','datetime','binary','json','vector'].includes(a.type.name) || a.type.name==='integer' && (a.type.params.bits===64 || a.type.params.unsigned && a.type.params.bits===32)))
-                            return selectOps.exec({entity,records:(await query()).map(row=>fromDb(entity,row)),selection:s});
+                            return selectOps.exec({entity,records:(await query()).map(row=>fromDb(entity,row,selectedVectors)),selection:s});
                         /**
                          * @param {any} node
                          * @returns {any}
@@ -385,7 +512,7 @@ export default class Adapter {
                         for (const o of s.orderBy) { q = q.orderByRaw('?? IS NULL ' + (o.nulls === 'first' ? 'DESC' : 'ASC'), [table(path)+'.'+o.attribute]).orderBy(table(path)+'.'+o.attribute,o.direction); }
                         if (s.limit !== null) q = q.limit(s.limit);
                         if (s.offset) q = q.offset(s.offset);
-                        return {records:(await q).map(row => fromDb(entity,row))};
+                            return {records:(await q).map(row => fromDb(entity,row,selectedVectors))};
                     }),
                 };
             };
@@ -407,6 +534,7 @@ export default class Adapter {
                  */
                 const execute = async function (trx) {
                     if (!deferredForeign) await ensureForeignKeys(trx);
+                    if (hasEnums && !deferredForeign) await ensureEnumChecks(trx);
                     if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
                     for (const path of Object.keys(model.entities)) if (await trx.schema.hasTable(table(path))) fail('CONFLICT', 'Target table already exists.');
                     for (const [path,entity] of Object.entries(model.entities)) {
@@ -415,21 +543,38 @@ export default class Adapter {
                             for (const a of entity.attributes) {
                                 let c;
                                 if (a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation) { if (pg) t.bigInteger(a.name).primary(); else if (mysql) t.specificType(a.name, 'bigint unsigned NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
-                                const physical = codec.type({attribute:a,dialect:knex.client.config.client,indexed:codec.indexed(entity,a.name)});
+                                const selectedAttributes=Object.hasOwn(nativeVectors,path) ? nativeVectors[path] : {};
+                                const nativeVector=Object.hasOwn(selectedAttributes,a.name) && selectedAttributes[a.name]===true;
+                                const physical = codec.type({attribute:a,dialect:knex.client.config.client,indexed:codec.indexed(entity,a.name),nativeVector});
                                 c = t.specificType(a.name,pg && physical==='text' ? 'text COLLATE "C"' : physical);
                                 if (!a.nullable) c.notNullable();
+                                if (a.type.name==='enum' && !mysql) c.checkIn(a.type.params.values,enumConstraint(path,a.name));
                             }
+                            if (mysql) for (const a of entity.attributes) if (a.type.name==='enum')
+                                t.check(`?? IN (${a.type.params.values.map(()=>'?').join(',')})`,[a.name,...a.type.params.values],enumConstraint(path,a.name));
                             if (entity.primaryKey && !entity.attributes.some(a => a.type.name === 'identity' && a.type.profile.type === 'int' && a.generation)) t.primary(entity.primaryKey);
                             for (const [name, columns] of Object.entries(entity.uniqueKeys)) t.unique(columns, `${table(path)}_u_${name}`);
                             for (const [name, columns] of Object.entries(entity.indexes)) t.index(columns.attributes, `${table(path)}_i_${name}`);
-                            if (!deferredForeign) for (const [index, relation] of Object.values(entity.relations).entries()) t.foreign(relation.attributes, `${table(path)}_f_${index}`).references(relation.target.attributes).inTable(table(relation.target.path));
+                            if (!deferredForeign) for (const [index,[relationName,relation]] of Object.entries(entity.relations).entries()) {
+                                const fk=t.foreign(relation.attributes,`${table(path)}_f_${index}`).references(relation.target.attributes).inTable(table(relation.target.path));
+                                const onDelete=expectedForeignAction(foreignKeyActions,path,relationName,'onDelete');
+                                const onUpdate=expectedForeignAction(foreignKeyActions,path,relationName,'onUpdate');
+                                if (onDelete!=='DEFAULT') fk.onDelete(onDelete);
+                                if (onUpdate!=='DEFAULT') fk.onUpdate(onUpdate);
+                            }
                         });
                         created.push(path);
                     }
                     if (deferredForeign) for (const [path, entity] of Object.entries(model.entities)) {
-                        for (const [index, relation] of Object.values(entity.relations).entries()) {
+                        for (const [index,[relationName,relation]] of Object.entries(entity.relations).entries()) {
                             const name = `${table(path)}_f_${index}`;
-                            await trx.schema.alterTable(table(path), t => t.foreign(relation.attributes, name).references(relation.target.attributes).inTable(table(relation.target.path)));
+                            await trx.schema.alterTable(table(path), t => {
+                                const fk=t.foreign(relation.attributes,name).references(relation.target.attributes).inTable(table(relation.target.path));
+                                const onDelete=expectedForeignAction(foreignKeyActions,path,relationName,'onDelete');
+                                const onUpdate=expectedForeignAction(foreignKeyActions,path,relationName,'onUpdate');
+                                if (onDelete!=='DEFAULT') fk.onDelete(onDelete);
+                                if (onUpdate!=='DEFAULT') fk.onUpdate(onUpdate);
+                            });
                             foreign.push({path,name,attributes:relation.attributes});
                         }
                     }
@@ -510,7 +655,8 @@ export default class Adapter {
                 const commands=batchOps.validate({operations:params.operations});
                 try {
                     return await knex.transaction(async trx=>{
-                        const backend=await adapter.open({model,connection:{getClient:()=>trx},...(runtime ? {runtime} : {}),[historyAccess]:true});
+                        if (mysql && hasEnums) await ensureMariaEnumChecks(trx);
+                        const backend=await adapter.open({model,connection:{getClient:()=>trx},...(runtime ? {runtime} : {}),nativeVectors,foreignKeyActions,[historyAccess]:true});
                         const results=[];
                         for (const command of commands) results.push(await (await backend.get({path:command.path}))[command.method](command.params));
                         return {results};

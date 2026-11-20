@@ -23,7 +23,7 @@ function container() {
     result.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
     return result;
 }
-async function open({schema,map,schemas,trustedPackages=[],createSchema=true,createNamespace=true,ownsNamespace=createNamespace,namespace='dem_rdb_test_' + randomBytes(8).toString('hex')}) {
+async function open({schema,map,schemas,trustedPackages=[],nativeVectors={},foreignKeyActions={},searchPath,createSchema=true,createNamespace=true,ownsNamespace=createNamespace,namespace='dem_rdb_test_' + randomBytes(8).toString('hex')}) {
     const adminContainer=container();
     const adminConnection=await adminContainer.get('TeqFw_Dem_RDb_Connection$');
     let admin;
@@ -41,7 +41,7 @@ async function open({schema,map,schemas,trustedPackages=[],createSchema=true,cre
         }
         const ownedContainer=container();
         ownedConnection=await ownedContainer.get('TeqFw_Dem_RDb_Connection$');
-        await ownedConnection.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:3}});
+        await ownedConnection.init({client:'pg',connection,searchPath:searchPath ?? [namespace],pool:{min:0,max:3}});
         const db=ownedConnection.getClient();
         const c = new Container();
         c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
@@ -51,7 +51,7 @@ async function open({schema,map,schemas,trustedPackages=[],createSchema=true,cre
         const compilation = await compiler.exec({schemas:schemas ?? [{packageName:'test',filename:'schema.json',document:schema}],...(trustedPackages.length ? {trustedPackages} : {}),...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         const {model} = compilation;
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        provider = await adapter.open({model,connection:ownedConnection});
+        provider = await adapter.open({model,connection:ownedConnection,nativeVectors,foreignKeyActions});
         if (createSchema) await provider.createSchema();
         return {
             provider,model,compilation,compiler,adapter,connection:ownedConnection,db,namespace,
@@ -260,4 +260,158 @@ test('PostgreSQL generated identity exhaustion rolls back without precision loss
 test('shared atomic batch workload preserves transaction behavior',async()=>{
     const env=await open({schema:atomicSchema});
     try {await exerciseAtomic({provider:env.provider,assert});} finally {await env.close();}
+});
+
+test('PostgreSQL native vectors require a visible extension before schema changes',async()=>{
+    const infrastructure=await acquireDemSchema(conformanceContainer);
+    const schemas=[
+        {packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'embedding',type:{name:'vector',params:{dimensions:3,element:'float'}},nullable:true}]}}},
+        infrastructure,
+    ];
+    await assert.rejects(
+        open({schemas,trustedPackages:['@teqfw/dem'],nativeVectors:{'/app/item':{embedding:true}},createSchema:false}),
+        {name:'DemRepositoryError',code:'UNSUPPORTED'},
+    );
+});
+
+test('PostgreSQL native vectors preserve exact float32 values and reject incompatible layouts',async()=>{
+    const infrastructure=await acquireDemSchema(conformanceContainer);
+    const app={packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[
+        {name:'id',type:{name:'identity'},generation:true},
+        {name:'embedding',type:{name:'vector',params:{dimensions:3,element:'float'}},nullable:true},
+    ]}}};
+    const schemas=[app,infrastructure];
+    const nativeVectors={'/app/item':{embedding:true}};
+    const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
+    let first;
+    let reopened;
+    try {
+        first=await open({schemas,trustedPackages:['@teqfw/dem'],nativeVectors,searchPath:[namespace,'public'],createSchema:false,namespace});
+        const initial=await first.provider.initialize({scope:'pg-native-vector',compilation:first.compilation});
+        assert.equal(initial.created,true);
+        const physical=(await first.db.raw(`SELECT format_type(a.atttypid,a.atttypmod) AS type FROM pg_attribute a
+            JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname=current_schema() AND c.relname='app_item' AND a.attname='embedding'`)).rows[0];
+        assert.equal(physical.type,'vector(3)');
+
+        const repo=await first.provider.get({path:'/app/item'});
+        const record={embedding:[1.5,Math.fround(0.1),1.401298464324817e-45]};
+        const created=(await repo.create({record})).record;
+        assert.deepEqual(created.embedding,record.embedding);
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:created.id}}})).record,created);
+        assert.deepEqual((await repo.list({selection:{where:{kind:'call',operator:'eq',args:[{kind:'attr',name:'embedding'},{kind:'value',value:record.embedding}]}}})).records,[created]);
+        const updated=(await repo.update({key:{kind:'primary',values:{id:created.id}},changes:{embedding:[2,3,4]}})).record;
+        assert.deepEqual(updated.embedding,[2,3,4]);
+        assert.deepEqual((await first.provider.execute({operations:[{path:'/app/item',method:'list',params:{selection:{}}}]})).results[0].records,[updated]);
+        await assert.rejects(repo.create({record:{embedding:[0.1,2,3]}}),{code:'UNSUPPORTED'});
+        assert.deepEqual((await repo.list({selection:{}})).records,[updated]);
+        await first.close({preserveSchema:true});
+        first=undefined;
+
+        reopened=await open({schemas,trustedPackages:['@teqfw/dem'],nativeVectors,searchPath:[namespace,'public'],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
+        const history=await reopened.provider.initialize({scope:'pg-native-vector',compilation:reopened.compilation});
+        assert.equal(history.created,false);
+        assert.deepEqual((await (await reopened.provider.get({path:'/app/item'})).list({selection:{}})).records,[updated]);
+
+        const before=(await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records;
+        const portable=await reopened.adapter.open({model:reopened.model,connection:reopened.connection});
+        await assert.rejects(()=>portable.initialize({scope:'pg-native-vector',compilation:reopened.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await portable.close();
+        assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
+
+        const changed=await reopened.compiler.exec({schemas:[
+            {...app,document:{$format:2,$namespace:'/app/',item:{attributes:[
+                {name:'id',type:{name:'identity'},generation:true},
+                {name:'embedding',type:{name:'vector',params:{dimensions:2,element:'float'}},nullable:true},
+            ]}}},
+            infrastructure,
+        ],trustedPackages:['@teqfw/dem']});
+        const changedBackend=await reopened.adapter.open({model:changed.model,connection:reopened.connection,nativeVectors});
+        await assert.rejects(()=>changedBackend.initialize({scope:'pg-native-vector',compilation:changed}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await changedBackend.close();
+        assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
+    } finally {
+        if(reopened) await reopened.close();
+        if(first) await first.close();
+    }
+});
+
+test('PostgreSQL selected foreign-key actions cascade and must match on history reopen',async()=>{
+    const infrastructure=await acquireDemSchema(conformanceContainer);
+    const app={packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',
+        parent:{attributes:[{name:'id',type:{name:'identity'},generation:true}]},
+        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],target:{path:'/app/parent',attributes:['id']}}}},
+    }};
+    const schemas=[app,infrastructure];
+    const foreignKeyActions={'/app/child':{parent:{onDelete:'CASCADE',onUpdate:'CASCADE'}}};
+    const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
+    let first;
+    let reopened;
+    try {
+        first=await open({schemas,trustedPackages:['@teqfw/dem'],foreignKeyActions,searchPath:[namespace],createSchema:false,namespace});
+        const initial=await first.provider.initialize({scope:'pg-cascade',compilation:first.compilation});
+        assert.equal(initial.created,true);
+        const parent=(await (await first.provider.get({path:'/app/parent'})).create({record:{}})).record;
+        const child=(await (await first.provider.get({path:'/app/child'})).create({record:{parent_id:parent.id}})).record;
+        await assert.rejects(first.db('app_child').insert({id:'900',parent_id:'999'}));
+        const actions=(await first.db.raw(`SELECT confupdtype,confdeltype FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'`)).rows[0];
+        assert.deepEqual(actions,{confupdtype:'c',confdeltype:'c'});
+        await first.db('app_parent').where({id:parent.id}).update({id:'20'});
+        assert.equal(String((await first.db('app_child').where({id:child.id}).first()).parent_id),'20');
+        await first.close({preserveSchema:true});
+        first=undefined;
+
+        reopened=await open({schemas,trustedPackages:['@teqfw/dem'],foreignKeyActions,searchPath:[namespace],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
+        assert.equal((await reopened.provider.initialize({scope:'pg-cascade',compilation:reopened.compilation})).created,false);
+        const before=(await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records;
+        const defaultBackend=await reopened.adapter.open({model:reopened.model,connection:reopened.connection});
+        await assert.rejects(()=>defaultBackend.initialize({scope:'pg-cascade',compilation:reopened.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await defaultBackend.close();
+        assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
+        await reopened.db('app_parent').where({id:'20'}).delete();
+        assert.equal((await reopened.db('app_child').count({count:'*'}).first()).count,'0');
+    } finally {
+        if(reopened) await reopened.close();
+        if(first) await first.close();
+    }
+});
+
+test('PostgreSQL enum checks enforce the declared set and reject tampered layouts',async()=>{
+    const infrastructure=await acquireDemSchema(conformanceContainer);
+    const app={packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[
+        {name:'id',type:{name:'identity'},generation:true},
+        {name:'state',type:{name:'enum',params:{values:['open',"owner's"]}}},
+        {name:'optional_state',type:{name:'enum',params:{values:['open',"owner's"]}},nullable:true},
+    ]}}};
+    const schemas=[app,infrastructure];
+    const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
+    let env;
+    try {
+        env=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace],createSchema:false,namespace});
+        const initial=await env.provider.initialize({scope:'pg-enum',compilation:env.compilation});
+        assert.equal(initial.created,true);
+        const checks=(await env.db.raw(`SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition
+            FROM pg_constraint WHERE conrelid='app_item'::regclass AND contype='c' ORDER BY conname`)).rows;
+        assert.deepEqual(checks.map(check=>[check.conname,check.convalidated,check.definition]),[
+            ['app_item_e_optional_state',true,`CHECK ((optional_state = ANY (ARRAY['open'::text, 'owner''s'::text])))`],
+            ['app_item_e_state',true,`CHECK ((state = ANY (ARRAY['open'::text, 'owner''s'::text])))`],
+        ]);
+        const repo=await env.provider.get({path:'/app/item'});
+        const saved=(await repo.create({record:{state:"owner's",optional_state:null}})).record;
+        await env.db('app_item').insert({id:'900',state:'open',optional_state:'open'});
+        await assert.rejects(env.db('app_item').insert({id:'901',state:'invalid',optional_state:null}));
+        await assert.rejects(env.db('app_item').where({id:saved.id}).update({state:'invalid'}));
+        const before=(await repo.list({selection:{}})).records;
+        await assert.rejects(env.db.transaction(async trx=>{
+            await trx('app_item').insert({id:'902',state:'open'});
+            await trx('app_item').insert({id:'903',state:'invalid'});
+        }));
+        assert.deepEqual((await repo.list({selection:{}})).records,before);
+
+        await env.db.schema.raw('ALTER TABLE ?? DROP CONSTRAINT ??', ['app_item','app_item_e_state']);
+        await env.db.schema.raw('ALTER TABLE ?? ADD CONSTRAINT ?? CHECK (state IS NOT NULL)', ['app_item','app_item_e_state']);
+        const applications=(await (await env.provider.get({path:'/dem/application'})).list({selection:{}})).records;
+        await assert.rejects(env.provider.initialize({scope:'pg-enum',compilation:env.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await assert.deepEqual((await (await env.provider.get({path:'/dem/application'})).list({selection:{}})).records,applications);
+    } finally {if(env) await env.close();}
 });

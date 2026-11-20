@@ -38,19 +38,58 @@ Every entity uses one ordinary SQL table. Its name is the DEM path without the l
 
 The adapter supports SQLite, PostgreSQL and MariaDB through Knex. It implements DEM repository CRUD/list operations and ordered atomic batches. Core logical values use native SQL types where the engine can preserve their meaning. Unsupported types, values, disabled relation enforcement, malformed existing tables and physical limits fail explicitly. Extension types, including `idb.CryptoKey`, are unsupported by this relational adapter. SQLite requires a single connection and enabled foreign keys. MariaDB requires InnoDB, 16 KiB pages, strict SQL mode and enabled foreign-key checks. PostgreSQL target schemas must exist and be first in the configured search path. The host installs the database driver.
 
-Core vectors currently use portable JSON-serialized text, including on PostgreSQL;
-they do not require pgvector. Opt-in PostgreSQL-native vector storage is proposed
-in [issue #1](https://github.com/teqfw/dem-rdb/issues/1) and is not yet an
-available configuration. Hosts must provision any database extensions and perform
-any representation migration explicitly.
+Core vectors use portable JSON-serialized text by default; this does not require
+pgvector. To select PostgreSQL-native `vector(N)` for a dense float Core vector,
+the host can pass a per-attribute `nativeVectors` map when opening the adapter:
 
-DEM Format 2 relations currently expose no foreign-key action settings, and
-host-selected cascade policies are tracked in [issue #2](https://github.com/teqfw/dem-rdb/issues/2).
-Likewise, Core enum alternatives are currently normalized by the Repository
-API; SQL-level `CHECK` enforcement is tracked in
-[issue #3](https://github.com/teqfw/dem-rdb/issues/3). These are not available
-configuration options yet. Do not rely on application validation to constrain
-direct SQL writes or migrate existing constraints automatically.
+```js
+const backend = await adapter.open({
+    model: compilation.model,
+    connection,
+    nativeVectors: {'/app/item': {embedding: true}},
+});
+```
+
+The keys are effective entity paths and attribute names. The Provider receives
+the same map in the object returned by its host Configuration. Provision a
+compatible PostgreSQL `vector` extension before opening the adapter. Native
+storage accepts normalized components only when they are exactly representable
+as finite float32 values; values that would lose precision are rejected. The
+declared dimension is enforced; reopening a history-managed scope verifies the
+physical column type and dimension. All backends sharing a scope must use
+compatible selections. The host performs representation and data migrations
+explicitly; initialization does not convert existing columns.
+
+The host can opt a relation into physical cascading actions without changing the
+DEM Format 2 descriptor. Pass `foreignKeyActions` to `adapter.open` or in the
+Provider's host Configuration:
+
+```js
+const foreignKeyActions = {
+    '/app/child': {
+        parent: {onDelete: 'CASCADE', onUpdate: 'CASCADE'},
+    },
+};
+const backend = await adapter.open({model: compilation.model, connection, foreignKeyActions});
+```
+
+The keys are effective entity paths and relation names. Each event may be
+omitted or set to `CASCADE`; omitted events use the engine's non-cascading
+default (`NO ACTION` or `RESTRICT`). Initialization creates the selected actions
+for new tables and checks existing history-managed layouts before access. It does
+not alter existing constraints; hosts must migrate them explicitly. SQLite and
+PostgreSQL cascade scenarios are covered by integration tests. MariaDB
+integration requires a separately configured database.
+
+For each Core enum attribute, DEM-RDB creates a named SQL `CHECK` from the
+alternatives in the DEM descriptor. On SQLite, PostgreSQL and MariaDB it also
+constrains direct SQL writes. Nullable attributes allow `NULL`; non-null values
+must belong to the declared set. Reopening a history-managed scope verifies
+the existing constraint and rejects missing or incompatible layouts. SQLite
+`PRAGMA ignore_check_constraints` and MariaDB `check_constraint_checks` must
+leave checks enabled on database sessions, including sessions used for direct
+SQL. The host must explicitly migrate old layouts and resolve invalid rows;
+initialization does not add or repair constraints on existing tables.
 
 `Config.get()` reads the `TEQFW_DEM_RDB` CFG fragment and returns a cached, deeply frozen Knex configuration. Default settings use keys such as `TEQFW_DEM_RDB__CLIENT`, `__FILENAME` and `__EXTRA`; named `main` settings use `TEQFW_DEM_RDB__MAIN_CLIENT`, `__MAIN_FILENAME` and `__MAIN_EXTRA`. Named settings do not inherit defaults. `EXTRA` accepts a JSON object; explicit standard fields override matching `EXTRA.connection` values.
 

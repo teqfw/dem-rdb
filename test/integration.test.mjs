@@ -13,7 +13,7 @@ const {schema:valueSchema,map:valueMap,exercise} = await conformanceContainer.ge
 const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer.get('TeqFw_Dem_Conformance_Atomic$');
 
 
-async function open({schema,map,schemas,trustedPackages=[],filename=':memory:',createSchema=true}) {
+async function open({schema,map,schemas,trustedPackages=[],foreignKeyActions={},filename=':memory:',createSchema=true}) {
     const c = new Container();
     c.addNamespaceRoot('TeqFw_Dem_', demNamespace.dirAbs, '.mjs');
     c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
@@ -25,7 +25,7 @@ async function open({schema,map,schemas,trustedPackages=[],filename=':memory:',c
     await connection.init({client:'sqlite3',connection:{filename},useNullAsDefault:true,pool:{min:1,max:1}});
     const db = connection.getClient();
     const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-    const provider = await adapter.open({model,connection});
+    const provider = await adapter.open({model,connection,foreignKeyActions});
     if (createSchema) await provider.createSchema();
     return {provider,model,compilation,compiler,adapter,db,connection,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>connection.disconnect()};
 }
@@ -349,6 +349,75 @@ test('provider rejects missing uniqueness and foreign key constraints', async ()
     } finally { await env.close(); }
 });
 
+
+test('explicit foreign-key cascade policy applies to multilevel delete/update and is validated on reopen',async()=>{
+    const schema={$format:2,$namespace:'/app/',
+        parent:{attributes:[{name:'id',type:{name:'identity'},generation:true}]},
+        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],target:{path:'/app/parent',attributes:['id']}}}},
+        grandchild:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'child_id',type:{name:'ref'}}],relations:{child:{attributes:['child_id'],target:{path:'/app/child',attributes:['id']}}}},
+    };
+    const foreignKeyActions={
+        '/app/child':{parent:{onDelete:'CASCADE',onUpdate:'CASCADE'}},
+        '/app/grandchild':{child:{onDelete:'CASCADE',onUpdate:'CASCADE'}},
+    };
+    const env=await open({schema,foreignKeyActions});
+    let defaultBackend;
+    try {
+        const parent=(await (await env.provider.get({path:'/app/parent'})).create({record:{}})).record;
+        const child=(await (await env.provider.get({path:'/app/child'})).create({record:{parent_id:parent.id}})).record;
+        const grandchild=(await (await env.provider.get({path:'/app/grandchild'})).create({record:{child_id:child.id}})).record;
+        await env.db('app_parent').where({id:parent.id}).update({id:20});
+        assert.equal((await env.db('app_child').where({id:child.id}).first()).parent_id,20);
+        await env.db('app_child').where({id:child.id}).update({id:30});
+        assert.equal((await env.db('app_grandchild').where({id:grandchild.id}).first()).child_id,30);
+        defaultBackend=await env.adapter.open({model:env.model,connection:env.connection});
+        await assert.rejects(defaultBackend.get({path:'/app/child'}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await defaultBackend.close();
+        defaultBackend=undefined;
+        await env.db('app_parent').where({id:20}).delete();
+        assert.equal(Number((await env.db('app_child').count({count:'*'}).first()).count),0);
+        assert.equal(Number((await env.db('app_grandchild').count({count:'*'}).first()).count),0);
+    } finally {
+        if(defaultBackend) await defaultBackend.close();
+        await env.close();
+    }
+});
+
+test('enum alternatives are enforced by named SQL checks including direct writes and nullable values',async()=>{
+    const schema={$format:2,$namespace:'/app/',item:{attributes:[
+        {name:'id',type:{name:'identity'},generation:true},
+        {name:'state',type:{name:'enum',params:{values:['open',"owner's"]}}},
+        {name:'optional_state',type:{name:'enum',params:{values:['open',"owner's"]}},nullable:true},
+    ]}};
+    const env=await open({schema});
+    try {
+        const repo=await env.provider.get({path:'/app/item'});
+        const accepted=(await repo.create({record:{state:"owner's",optional_state:null}})).record;
+        assert.deepEqual(accepted,{id:'1',state:"owner's",optional_state:null});
+        await env.db('app_item').insert({state:'open',optional_state:'open'});
+        await assert.rejects(env.db('app_item').insert({state:'invalid',optional_state:null}));
+        await assert.rejects(env.db('app_item').where({id:accepted.id}).update({state:'invalid'}));
+        await assert.rejects(repo.create({record:{state:'invalid'}}),{code:'INVALID_INPUT'});
+        const before=(await repo.list({selection:{}})).records;
+        await assert.rejects(env.db.transaction(async trx=>{
+            await trx('app_item').insert({state:'open'});
+            await trx('app_item').insert({state:'invalid'});
+        }));
+        assert.deepEqual((await repo.list({selection:{}})).records,before);
+        await env.db.raw('PRAGMA ignore_check_constraints = ON');
+        await assert.rejects(repo.create({record:{state:'open'}}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await env.db.raw('PRAGMA ignore_check_constraints = OFF');
+
+        await env.db.schema.createTable('app_item_replacement',table=>{
+            table.increments('id');
+            table.text('state').notNullable();
+            table.text('optional_state').nullable();
+        });
+        await env.db.schema.dropTable('app_item');
+        await env.db.schema.renameTable('app_item_replacement','app_item');
+        await assert.rejects(env.provider.get({path:'/app/item'}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+    } finally {await env.close();}
+});
 
 test('all core DEM values round-trip with exact selection semantics',async()=>{
     const env=await open({schema:valueSchema,map:valueMap});

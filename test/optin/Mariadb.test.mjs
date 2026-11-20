@@ -9,29 +9,27 @@ const {register} = await conformanceContainer.get('TeqFw_Dem_Conformance_Reposit
 const {schema:valueSchema,map:valueMap,exercise} = await conformanceContainer.get('TeqFw_Dem_Conformance_Values$');
 const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer.get('TeqFw_Dem_Conformance_Atomic$');
 
-import knex from 'knex';
-import Connection from '../../src/Connection.mjs';
 import {randomBytes} from 'node:crypto';
 
-const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE};
+const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE,...(process.env.TEQFW_DB__MYSQL_SOCKET_PATH ? {socketPath:process.env.TEQFW_DB__MYSQL_SOCKET_PATH} : {})};
 if (Object.values(connection).some(value => !value)) throw new Error('MariaDB test connection environment is incomplete.');
 const table = path => path.slice(1).replaceAll('/', '_');
-async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberStrings:true}}) {
-    const ownedConnection=new Connection({knexFactory:knex});
+async function open({schema,map,foreignKeyActions={},driverOptions={supportBigNumbers:true,bigNumberStrings:true}}) {
+    const c = new Container();
+    c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
+    c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+    const ownedConnection=await c.get('TeqFw_Dem_RDb_Connection$');
     await ownedConnection.init({client:'mysql2',connection:{...connection,...driverOptions},pool:{min:0,max:4}});
     const db=ownedConnection.getClient();
     try {
-        const c = new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
-        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}],...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         for (const path of Object.keys(model.entities)) if (await db.schema.hasTable(table(path))) throw new Error('A test table already exists; refusing to modify it.');
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        const provider = await adapter.open({model,connection:ownedConnection});
+        const provider = await adapter.open({model,connection:ownedConnection,foreignKeyActions});
         await provider.createSchema();
-        return {provider,model,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{
+        return {provider,model,adapter,connection:ownedConnection,db,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{
             try {
                 for (const [path,entity] of Object.entries(model.entities)) for (const [index,relation] of Object.values(entity.relations).entries())
                     await db.schema.alterTable(table(path), t=>t.dropForeign(relation.attributes,`${table(path)}_f_${index}`));
@@ -95,6 +93,56 @@ test('cyclic MariaDB relationships can be created and enforced', async () => {
     } finally { await env.close(); }
 });
 
+test('MariaDB host-selected foreign-key cascades apply and validate against catalog metadata',async()=>{
+    const schema={$format:2,$namespace:'/app/',
+        parent:{attributes:[{name:'id',type:{name:'identity'},generation:true}]},
+        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],target:{path:'/app/parent',attributes:['id']}}}},
+    };
+    const foreignKeyActions={'/app/child':{parent:{onDelete:'CASCADE',onUpdate:'CASCADE'}}};
+    const env=await open({schema,foreignKeyActions});
+    let defaultBackend;
+    try {
+        const parent=(await (await env.provider.get({path:'/app/parent'})).create({record:{}})).record;
+        const child=(await (await env.provider.get({path:'/app/child'})).create({record:{parent_id:parent.id}})).record;
+        await env.db('app_parent').where({id:parent.id}).update({id:20});
+        assert.equal(String((await env.db('app_child').where({id:child.id}).first()).parent_id),'20');
+        defaultBackend=await env.adapter.open({model:env.model,connection:env.connection});
+        await assert.rejects(defaultBackend.get({path:'/app/child'}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        await defaultBackend.close();
+        defaultBackend=undefined;
+        await env.db('app_parent').where({id:20}).delete();
+        assert.equal(Number((await env.db('app_child').count({count:'*'}).first()).count),0);
+    } finally {
+        if(defaultBackend) await defaultBackend.close();
+        await env.close();
+    }
+});
+
+test('MariaDB enum checks enforce alternatives and reject tampered layouts',async()=>{
+    const path='/app/item';
+    const schema={$format:2,$namespace:'/app/',item:{attributes:[
+        {name:'state',type:{name:'enum',params:{values:['open',"owner's"]}}},
+        {name:'optional_state',type:{name:'enum',params:{values:['open',"owner's"]}},nullable:true},
+    ]}};
+    const env=await open({schema});
+    try {
+        const repo=await env.provider.get({path});
+        const trx=await env.db.transaction();
+        try {
+            await trx.raw('SET SESSION check_constraint_checks=OFF');
+            await assert.rejects(env.adapter.open({model:env.model,connection:{getClient:()=>trx}}),{code:'UNSUPPORTED'});
+        } finally {await trx.raw('SET SESSION check_constraint_checks=ON'); await trx.rollback();}
+        await repo.create({record:{state:"owner's",optional_state:null}});
+        await assert.rejects(repo.create({record:{state:'closed'}}),{code:'INVALID_INPUT'});
+        await assert.rejects(env.db(table(path)).insert({state:'closed',optional_state:null}));
+        await assert.rejects(env.db(table(path)).where({state:"owner's"}).update({state:'closed'}));
+        await env.db(table(path)).del();
+        await env.db.schema.alterTable(table(path),t=>t.dropChecks([`${table(path)}_e_state`]));
+        await env.db.raw('ALTER TABLE ?? ADD CONSTRAINT ?? CHECK (`state` IN (\'open\'))',[table(path),'wrong_enum_check']);
+        await assert.rejects(env.provider.get({path}),{code:'UNSUPPORTED'});
+    } finally {await env.close();}
+});
+
 test('entity containing only a generated identity accepts an empty record', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true}]}}});
     try {
@@ -116,14 +164,14 @@ test('a failed schema creation removes tables created by the attempt', async () 
     const suffix = randomBytes(8).toString('hex');
     const first = `/cleanup${suffix}/a`, second = `/cleanup${suffix}/b`;
     const schema = {$format:2,$namespace:`/cleanup${suffix}/`,a:{attributes:[{name:'name',type:{name:'text'}}]},b:{attributes:[{name:'name',type:{name:'text'}}]}};
-    const ownedConnection=new Connection({knexFactory:knex});
+    const c = new Container();
+    c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
+    c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+    const ownedConnection=await c.get('TeqFw_Dem_RDb_Connection$');
     await ownedConnection.init({client:'mysql2',connection:{...connection,supportBigNumbers:true,bigNumberStrings:true},pool:{min:0,max:1}});
     const db=ownedConnection.getClient();
     try {
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
-        const c = new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
-        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});

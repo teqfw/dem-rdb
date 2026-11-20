@@ -11,16 +11,28 @@ Open the adapter with `{model: compilation.model, connection}`. Call `initialize
 
 The adapter uses one relational projection: table names join DEM path segments with `_`, and SQL columns use the declared attribute names. It adds no private row metadata and does not hash physical identifiers. Overlong or colliding identifiers fail explicitly. Extension types and values the selected engine cannot represent faithfully are unsupported.
 
-Core vectors currently use JSON-serialized text on all supported engines; pgvector
-is not required. Native PostgreSQL vector storage is a proposed feature, not a
-current configuration option. Hosts provision extensions and manage migrations.
+Core vectors use JSON-serialized text by default. A host can opt individual dense
+float vector attributes into PostgreSQL `vector(N)` through `nativeVectors` in
+`adapter.open` or the Provider's host Configuration, for example
+`{'/app/item': {embedding: true}}`. Provision the PostgreSQL `vector` extension
+before opening. Native storage accepts only normalized components exactly
+representable as finite float32 values. Use compatible selections for a shared
+scope; the host manages any representation or data migration. See the README
+for setup and limitations.
 
-DEM Format 2 has no foreign-key action fields; explicit host-selected physical
-cascade policies are tracked in [issue #2](https://github.com/teqfw/dem-rdb/issues/2).
-Enum alternatives are currently enforced by Repository normalization only;
-database `CHECK` constraints are tracked in
-[issue #3](https://github.com/teqfw/dem-rdb/issues/3). Neither is currently a
-configuration option. Never assume direct SQL writes receive these guarantees.
+Select physical cascade actions with `foreignKeyActions` in `adapter.open` or
+the Provider's host Configuration, for example
+`{'/app/child': {parent: {onDelete: 'CASCADE', onUpdate: 'CASCADE'}}}`.
+Keys are effective entity paths and relation names. Each omitted event retains
+the engine's non-cascading default; `CASCADE` is the supported explicit value.
+Reopening a history-managed layout verifies the actions; hosts migrate existing
+constraints explicitly. See the README for engine verification.
+
+DEM-RDB creates a named SQL `CHECK` from each Core enum's declared alternatives
+and verifies the constraint on history-managed reopen. This applies to direct
+SQL writes as well as Repository operations. Keep SQLite and MariaDB CHECK
+enforcement enabled on every database session. Hosts must explicitly migrate
+old layouts and remediate invalid rows; initialization does not repair them.
 
 Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. Route that Provider's Configuration and Connection dependencies by effective provenance. Its host Configuration supplies the compiled model and optional model-bound `runtime`; it contains no Knex client or physical Connection selector. The Provider opens lazily and borrows its selected Connection. Backend closure never disconnects a shared Connection.
 

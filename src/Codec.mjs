@@ -23,10 +23,16 @@ export default class Codec {
          * @param {any} deps.attribute
          * @param {string} deps.dialect
          * @param {boolean} deps.indexed
+         * @param {boolean} [deps.nativeVector]
          * @returns {string}
          */
-        this.type = function ({attribute:a,dialect,indexed}) {
+        this.type = function ({attribute:a,dialect,indexed,nativeVector=false}) {
             const n=a.type.name,p=a.type.params ?? {};
+            if (nativeVector) {
+                if (dialect!=='pg' || n!=='vector' || p.element!=='float' || p.sparse || !Number.isSafeInteger(p.dimensions) || p.dimensions<1)
+                    throw errors.create({code:'UNSUPPORTED',message:'Native vectors require dense float vectors on PostgreSQL.'});
+                return 'vector(' + p.dimensions + ')';
+            }
             if (n==='boolean') return 'integer';
             if (numeric(a)) {
                 if (n !== 'integer') return dialect==='pg' ? 'bigint' : dialect==='mysql2' ? 'bigint unsigned' : 'integer';
@@ -48,13 +54,15 @@ export default class Codec {
          * @param {any} deps.entity
          * @param {any} deps.record
          * @param {string} deps.dialect
+         * @param {Record<string, boolean>} [deps.nativeVectors]
          * @returns {any}
          */
-        this.encode = function ({entity,record,dialect}) {
+        this.encode = function ({entity,record,dialect,nativeVectors={}}) {
             return Object.fromEntries(Object.entries(record).map(([key,value])=>{
                 const a=entity.attributes.find(a=>a.name===key), n=a.type.name;
                 if (value===null) return [key,null];
-                const type=this.type({attribute:a,dialect,indexed:this.indexed(entity,key)});
+                const nativeVector=Object.hasOwn(nativeVectors,key) && nativeVectors[key]===true;
+                const type=this.type({attribute:a,dialect,indexed:this.indexed(entity,key),nativeVector});
                 if (['identity','ref'].includes(n) && a.type.profile.type==='int') {
                     const max=dialect==='mysql2' ? 18446744073709551615n : 9223372036854775807n;
                     if (BigInt(value)>max) throw errors.create({code:'UNSUPPORTED',message:'Identity exceeds native 64-bit storage capacity.'});
@@ -69,14 +77,18 @@ export default class Codec {
                 if (typeof value==='string' && ['string','text','enum','uuid','date','datetime','identity','ref'].includes(n) && (Buffer.from(value,'utf8').toString('utf8')!==value || dialect==='pg' && value.includes('\0')))
                     throw errors.create({code:'UNSUPPORTED',message:'Text cannot be represented losslessly in the selected physical encoding.'});
                 if (n==='binary') value=Buffer.from(String(value),'base64');
-                else if (['json','vector'].includes(n)) value=JSON.stringify(value,(_key,item)=>item && typeof item==='object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])) : item);
+                else if (nativeVector) {
+                    if (!Array.isArray(value) || value.length!==a.type.params.dimensions || value.some(component=>!Number.isFinite(component) || !Number.isFinite(Math.fround(component)) || Math.fround(component)!==component))
+                        throw errors.create({code:'UNSUPPORTED',message:'Native vector values must match the declared dimension and be exactly representable as finite float32 values.'});
+                    value='['+value.join(',')+']';
+                } else if (['json','vector'].includes(n)) value=JSON.stringify(value,(_key,item)=>item && typeof item==='object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])) : item);
                 if (dialect==='mysql2' && ['longblob','varbinary(512)'].includes(type) && !Buffer.isBuffer(value)) value=Buffer.from(String(value),'utf8');
                 if (type==='varbinary(512)' && Buffer.byteLength(value)>512) throw errors.create({code:'UNSUPPORTED',message:'Indexed MariaDB value exceeds 512 bytes.'});
                 return [key,value];
             }));
         };
-        /** @param {any} entity @param {any} row @returns {any} */
-        this.decode = function (entity,row) {
+        /** @param {any} entity @param {any} row @param {Record<string, boolean>} [nativeVectors] @returns {any} */
+        this.decode = function (entity,row,nativeVectors={}) {
             if (!row) return null;
             try {
                 const result=Object.fromEntries(entity.attributes.map(a=>{
@@ -97,7 +109,11 @@ export default class Codec {
                     }
                     if (a.type.name==='decimal' && typeof value!=='string') throw new Error('Exact decimals require string driver results');
                     if (a.type.name==='boolean') { if (![0,1,false,true].includes(value)) throw new Error('Invalid boolean'); value=Boolean(value); }
-                    if (['json','vector'].includes(a.type.name)) value=JSON.parse(value);
+                    if (Object.hasOwn(nativeVectors,a.name) && nativeVectors[a.name]===true) {
+                        const parsed=typeof value==='string' ? JSON.parse(value) : value;
+                        if (!Array.isArray(parsed)) throw new Error('Invalid PostgreSQL vector result');
+                        value=parsed.map(component=>Math.fround(component));
+                    } else if (['json','vector'].includes(a.type.name)) value=JSON.parse(value);
                     return [a.name,value];
                 }));
                 return normalize.record({entity,record:result,mode:'complete'});

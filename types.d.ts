@@ -12,6 +12,10 @@ export interface RdbConfiguration {
     model: DemModel;
     /** DEM Runtime binding for model-scoped Core or extension operations. */
     runtime?: RdbRuntime;
+    /** PostgreSQL vector columns selected by canonical DEM path and attribute name. */
+    nativeVectors?: Record<string, Record<string, true>>;
+    /** Explicit referential actions selected by canonical child path and relation name. */
+    foreignKeyActions?: Record<string, Record<string, {onDelete?: 'CASCADE'; onUpdate?: 'CASCADE'}>>;
 }
 export interface RdbConnection {
     init(configuration: Readonly<Record<string, any>>): Promise<void>;
