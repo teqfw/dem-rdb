@@ -44,6 +44,14 @@ in [issue #1](https://github.com/teqfw/dem-rdb/issues/1) and is not yet an
 available configuration. Hosts must provision any database extensions and perform
 any representation migration explicitly.
 
+DEM Format 2 relations currently expose no foreign-key action settings, and
+host-selected cascade policies are tracked in [issue #2](https://github.com/teqfw/dem-rdb/issues/2).
+Likewise, Core enum alternatives are currently normalized by the Repository
+API; SQL-level `CHECK` enforcement is tracked in
+[issue #3](https://github.com/teqfw/dem-rdb/issues/3). These are not available
+configuration options yet. Do not rely on application validation to constrain
+direct SQL writes or migrate existing constraints automatically.
+
 `Config.get()` reads the `TEQFW_DEM_RDB` CFG fragment and returns a cached, deeply frozen Knex configuration. Default settings use keys such as `TEQFW_DEM_RDB__CLIENT`, `__FILENAME` and `__EXTRA`; named `main` settings use `TEQFW_DEM_RDB__MAIN_CLIENT`, `__MAIN_FILENAME` and `__MAIN_EXTRA`. Named settings do not inherit defaults. `EXTRA` accepts a JSON object; explicit standard fields override matching `EXTRA.connection` values.
 
 The Provider opens lazily, caches its backend and borrows the DI-selected Connection. Its `initialize({scope, compilation})` confirms model history before `get` or `execute` can access a history-managed model. Models without DEM history keep direct repository access. Closing a backend invalidates its repositories without disconnecting a shared Connection. Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. The host initializes storage before resolving application consumers.

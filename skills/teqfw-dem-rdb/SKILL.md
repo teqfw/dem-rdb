@@ -15,6 +15,13 @@ Core vectors currently use JSON-serialized text on all supported engines; pgvect
 is not required. Native PostgreSQL vector storage is a proposed feature, not a
 current configuration option. Hosts provision extensions and manage migrations.
 
+DEM Format 2 has no foreign-key action fields; explicit host-selected physical
+cascade policies are tracked in [issue #2](https://github.com/teqfw/dem-rdb/issues/2).
+Enum alternatives are currently enforced by Repository normalization only;
+database `CHECK` constraints are tracked in
+[issue #3](https://github.com/teqfw/dem-rdb/issues/3). Neither is currently a
+configuration option. Never assume direct SQL writes receive these guarantees.
+
 Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. Route that Provider's Configuration and Connection dependencies by effective provenance. Its host Configuration supplies the compiled model and optional model-bound `runtime`; it contains no Knex client or physical Connection selector. The Provider opens lazily and borrows its selected Connection. Backend closure never disconnects a shared Connection.
 
 Use Format 2 DEM descriptors and Format 1 host maps. Verify the integration with real SQLite. PostgreSQL and MariaDB need their separately configured integration environments; SQLite results do not establish their conformance.
