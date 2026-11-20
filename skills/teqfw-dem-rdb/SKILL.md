@@ -11,6 +11,10 @@ Open the adapter with `{model: compilation.model, connection}`. Call `initialize
 
 The adapter uses one relational projection: table names join DEM path segments with `_`, and SQL columns use the declared attribute names. It adds no private row metadata and does not hash physical identifiers. Overlong or colliding identifiers fail explicitly. Extension types and values the selected engine cannot represent faithfully are unsupported.
 
+Core vectors currently use JSON-serialized text on all supported engines; pgvector
+is not required. Native PostgreSQL vector storage is a proposed feature, not a
+current configuration option. Hosts provision extensions and manage migrations.
+
 Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. Route that Provider's Configuration and Connection dependencies by effective provenance. Its host Configuration supplies the compiled model and optional model-bound `runtime`; it contains no Knex client or physical Connection selector. The Provider opens lazily and borrows its selected Connection. Backend closure never disconnects a shared Connection.
 
 Use Format 2 DEM descriptors and Format 1 host maps. Verify the integration with real SQLite. PostgreSQL and MariaDB need their separately configured integration environments; SQLite results do not establish their conformance.

@@ -38,6 +38,12 @@ Every entity uses one ordinary SQL table. Its name is the DEM path without the l
 
 The adapter supports SQLite, PostgreSQL and MariaDB through Knex. It implements DEM repository CRUD/list operations and ordered atomic batches. Core logical values use native SQL types where the engine can preserve their meaning. Unsupported types, values, disabled relation enforcement, malformed existing tables and physical limits fail explicitly. Extension types, including `idb.CryptoKey`, are unsupported by this relational adapter. SQLite requires a single connection and enabled foreign keys. MariaDB requires InnoDB, 16 KiB pages, strict SQL mode and enabled foreign-key checks. PostgreSQL target schemas must exist and be first in the configured search path. The host installs the database driver.
 
+Core vectors currently use portable JSON-serialized text, including on PostgreSQL;
+they do not require pgvector. Opt-in PostgreSQL-native vector storage is proposed
+in [issue #1](https://github.com/teqfw/dem-rdb/issues/1) and is not yet an
+available configuration. Hosts must provision any database extensions and perform
+any representation migration explicitly.
+
 `Config.get()` reads the `TEQFW_DEM_RDB` CFG fragment and returns a cached, deeply frozen Knex configuration. Default settings use keys such as `TEQFW_DEM_RDB__CLIENT`, `__FILENAME` and `__EXTRA`; named `main` settings use `TEQFW_DEM_RDB__MAIN_CLIENT`, `__MAIN_FILENAME` and `__MAIN_EXTRA`. Named settings do not inherit defaults. `EXTRA` accepts a JSON object; explicit standard fields override matching `EXTRA.connection` values.
 
 The Provider opens lazily, caches its backend and borrows the DI-selected Connection. Its `initialize({scope, compilation})` confirms model history before `get` or `execute` can access a history-managed model. Models without DEM history keep direct repository access. Closing a backend invalidates its repositories without disconnecting a shared Connection. Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. The host initializes storage before resolving application consumers.
