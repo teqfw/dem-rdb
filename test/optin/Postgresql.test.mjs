@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
 
-const conformanceContainer = new Container();
-conformanceContainer.addNamespaceRoot('TeqFw_Dem_', demNamespace.dirAbs, '.mjs');
+const conformanceContainer = new Container({namespaces:[{prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'}]});
 const {register} = await conformanceContainer.get('TeqFw_Dem_Conformance_Repository$');
 const {schema:valueSchema,map:valueMap,exercise} = await conformanceContainer.get('TeqFw_Dem_Conformance_Values$');
 const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer.get('TeqFw_Dem_Conformance_Atomic$');
@@ -19,11 +18,12 @@ const connection = {
     ...(process.env.TEQFW_DB__PG_DATABASE ? {database:process.env.TEQFW_DB__PG_DATABASE} : {}),
 };
 function container() {
-    const result = new Container();
-    result.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
-    return result;
+    return new Container({namespaces:[
+        {prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'},
+        {prefix:'TeqFw_Dem_RDb_',target:new URL('../../src',import.meta.url).pathname,defaultExt:'.mjs'},
+    ]});
 }
-async function open({schema,map,schemas,trustedPackages=[],nativeVectors={},foreignKeyActions={},searchPath,createSchema=true,createNamespace=true,ownsNamespace=createNamespace,namespace='dem_rdb_test_' + randomBytes(8).toString('hex')}) {
+async function open({schema,map,schemas,trustedPackages=[],searchPath,createSchema=true,createNamespace=true,ownsNamespace=createNamespace,namespace='dem_rdb_test_' + randomBytes(8).toString('hex')}) {
     const adminContainer=container();
     const adminConnection=await adminContainer.get('TeqFw_Dem_RDb_Connection$');
     let admin;
@@ -43,18 +43,21 @@ async function open({schema,map,schemas,trustedPackages=[],nativeVectors={},fore
         ownedConnection=await ownedContainer.get('TeqFw_Dem_RDb_Connection$');
         await ownedConnection.init({client:'pg',connection,searchPath:searchPath ?? [namespace],pool:{min:0,max:3}});
         const db=ownedConnection.getClient();
-        const c = new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
-        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
-        (await c.get('TeqFw_Dem_Registry$')).finalize();
+        const c=container();
+        const registry=await c.get('TeqFw_Dem_Registry$');
+        registry.register((await c.get('TeqFw_Dem_RDb_Type_Vector_Provider$')).getDefinitions());registry.finalize();
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const compilation = await compiler.exec({schemas:schemas ?? [{packageName:'test',filename:'schema.json',document:schema}],...(trustedPackages.length ? {trustedPackages} : {}),...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
         const {model} = compilation;
+        const vectorHandler=await c.get('TeqFw_Dem_RDb_Type_Vector_Handler$');
+        const runtimeService=await c.get('TeqFw_Dem_Repository_Runtime$');
+        const bindRuntime=model=>runtimeService.bind({model,registry,handlers:[vectorHandler]});
+        const runtime=await bindRuntime(model);
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-        provider = await adapter.open({model,connection:ownedConnection,nativeVectors,foreignKeyActions});
+        provider = await adapter.open({model,connection:ownedConnection,runtime});
         if (createSchema) await provider.createSchema();
         return {
-            provider,model,compilation,compiler,adapter,connection:ownedConnection,db,namespace,
+            provider,model,compilation,compiler,adapter,connection:ownedConnection,db,namespace,runtime,bindRuntime,
             selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),
             close:async({preserveSchema=false}={})=>{
                 try { await provider.close(); }
@@ -224,9 +227,10 @@ test('long generated constraint names fail before schema creation', async () => 
         await conn.init({client:'pg',connection,searchPath:[namespace],pool:{min:0,max:1}});
         await conn.getClient().schema.createSchema(namespace);
         namespaceCreated=true;
-        const c=new Container();
-        c.addNamespaceRoot('TeqFw_Dem_',demNamespace.dirAbs,'.mjs');
-        c.addNamespaceRoot('TeqFw_Dem_RDb_',new URL('../../src',import.meta.url).pathname,'.mjs');
+        const c=new Container({namespaces:[
+            {prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'},
+            {prefix:'TeqFw_Dem_RDb_',target:new URL('../../src',import.meta.url).pathname,defaultExt:'.mjs'},
+        ]});
         (await c.get('TeqFw_Dem_Registry$')).finalize();
         const compilation=await (await c.get('TeqFw_Dem_Compile$')).exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
         const adapter=await c.get('TeqFw_Dem_RDb_Adapter$');
@@ -262,31 +266,30 @@ test('shared atomic batch workload preserves transaction behavior',async()=>{
     try {await exerciseAtomic({provider:env.provider,assert});} finally {await env.close();}
 });
 
-test('PostgreSQL native vectors require a visible extension before schema changes',async()=>{
+test('PostgreSQL vectors require a visible pgvector extension before schema changes',async()=>{
     const infrastructure=await acquireDemSchema(conformanceContainer);
     const schemas=[
-        {packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'embedding',type:{name:'vector',params:{dimensions:3,element:'float'}},nullable:true}]}}},
+        {packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'embedding',type:{name:'teqfw.dem_rdb.vector',params:{dimensions:3}},nullable:true}]}}},
         infrastructure,
     ];
     await assert.rejects(
-        open({schemas,trustedPackages:['@teqfw/dem'],nativeVectors:{'/app/item':{embedding:true}},createSchema:false}),
+        open({schemas,trustedPackages:['@teqfw/dem'],createSchema:false}),
         {name:'DemRepositoryError',code:'UNSUPPORTED'},
     );
 });
 
-test('PostgreSQL native vectors preserve exact float32 values and reject incompatible layouts',async()=>{
+test('PostgreSQL vectors explicitly round to float32 and reject incompatible layouts',async()=>{
     const infrastructure=await acquireDemSchema(conformanceContainer);
     const app={packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',item:{attributes:[
         {name:'id',type:{name:'identity'},generation:true},
-        {name:'embedding',type:{name:'vector',params:{dimensions:3,element:'float'}},nullable:true},
+        {name:'embedding',type:{name:'teqfw.dem_rdb.vector',params:{dimensions:3}},nullable:true},
     ]}}};
     const schemas=[app,infrastructure];
-    const nativeVectors={'/app/item':{embedding:true}};
     const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
     let first;
     let reopened;
     try {
-        first=await open({schemas,trustedPackages:['@teqfw/dem'],nativeVectors,searchPath:[namespace,'public'],createSchema:false,namespace});
+        first=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace,'public'],createSchema:false,namespace});
         const initial=await first.provider.initialize({scope:'pg-native-vector',compilation:first.compilation});
         assert.equal(initial.created,true);
         const physical=(await first.db.raw(`SELECT format_type(a.atttypid,a.atttypmod) AS type FROM pg_attribute a
@@ -295,38 +298,37 @@ test('PostgreSQL native vectors preserve exact float32 values and reject incompa
         assert.equal(physical.type,'vector(3)');
 
         const repo=await first.provider.get({path:'/app/item'});
-        const record={embedding:[1.5,Math.fround(0.1),1.401298464324817e-45]};
+        const record={embedding:[1.5,0.1,1.401298464324817e-45]};
         const created=(await repo.create({record})).record;
-        assert.deepEqual(created.embedding,record.embedding);
+        assert.deepEqual(created.embedding,[1.5,Math.fround(0.1),1.401298464324817e-45]);
         assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:created.id}}})).record,created);
-        assert.deepEqual((await repo.list({selection:{where:{kind:'call',operator:'eq',args:[{kind:'attr',name:'embedding'},{kind:'value',value:record.embedding}]}}})).records,[created]);
+        await assert.rejects(repo.list({selection:{where:{kind:'call',operator:'eq',args:[{kind:'attr',name:'embedding'},{kind:'value',value:record.embedding}]}}}),{code:'INVALID_INPUT'});
         const updated=(await repo.update({key:{kind:'primary',values:{id:created.id}},changes:{embedding:[2,3,4]}})).record;
         assert.deepEqual(updated.embedding,[2,3,4]);
         assert.deepEqual((await first.provider.execute({operations:[{path:'/app/item',method:'list',params:{selection:{}}}]})).results[0].records,[updated]);
-        await assert.rejects(repo.create({record:{embedding:[0.1,2,3]}}),{code:'UNSUPPORTED'});
+        await assert.rejects(repo.create({record:{embedding:[0.1,2]}}),{code:'INVALID_INPUT'});
+        await assert.rejects(repo.create({record:{embedding:[Number.MAX_VALUE,0,0]}}),{code:'UNSUPPORTED'});
         assert.deepEqual((await repo.list({selection:{}})).records,[updated]);
         await first.close({preserveSchema:true});
         first=undefined;
 
-        reopened=await open({schemas,trustedPackages:['@teqfw/dem'],nativeVectors,searchPath:[namespace,'public'],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
+        reopened=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace,'public'],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
         const history=await reopened.provider.initialize({scope:'pg-native-vector',compilation:reopened.compilation});
         assert.equal(history.created,false);
         assert.deepEqual((await (await reopened.provider.get({path:'/app/item'})).list({selection:{}})).records,[updated]);
 
         const before=(await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records;
-        const portable=await reopened.adapter.open({model:reopened.model,connection:reopened.connection});
-        await assert.rejects(()=>portable.initialize({scope:'pg-native-vector',compilation:reopened.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
-        await portable.close();
+        await assert.rejects(()=>reopened.adapter.open({model:reopened.model,connection:reopened.connection}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
 
         const changed=await reopened.compiler.exec({schemas:[
             {...app,document:{$format:2,$namespace:'/app/',item:{attributes:[
                 {name:'id',type:{name:'identity'},generation:true},
-                {name:'embedding',type:{name:'vector',params:{dimensions:2,element:'float'}},nullable:true},
+                {name:'embedding',type:{name:'teqfw.dem_rdb.vector',params:{dimensions:2}},nullable:true},
             ]}}},
             infrastructure,
         ],trustedPackages:['@teqfw/dem']});
-        const changedBackend=await reopened.adapter.open({model:changed.model,connection:reopened.connection,nativeVectors});
+        const changedBackend=await reopened.adapter.open({model:changed.model,connection:reopened.connection,runtime:reopened.bindRuntime(changed.model)});
         await assert.rejects(()=>changedBackend.initialize({scope:'pg-native-vector',compilation:changed}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
         await changedBackend.close();
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
@@ -336,19 +338,18 @@ test('PostgreSQL native vectors preserve exact float32 values and reject incompa
     }
 });
 
-test('PostgreSQL selected foreign-key actions cascade and must match on history reopen',async()=>{
+test('PostgreSQL DEM relation actions cascade and must match on history reopen',async()=>{
     const infrastructure=await acquireDemSchema(conformanceContainer);
     const app={packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',
         parent:{attributes:[{name:'id',type:{name:'identity'},generation:true}]},
-        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],target:{path:'/app/parent',attributes:['id']}}}},
+        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],onDelete:'cascade',onUpdate:'cascade',target:{path:'/app/parent',attributes:['id']}}}},
     }};
     const schemas=[app,infrastructure];
-    const foreignKeyActions={'/app/child':{parent:{onDelete:'CASCADE',onUpdate:'CASCADE'}}};
     const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
     let first;
     let reopened;
     try {
-        first=await open({schemas,trustedPackages:['@teqfw/dem'],foreignKeyActions,searchPath:[namespace],createSchema:false,namespace});
+        first=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace],createSchema:false,namespace});
         const initial=await first.provider.initialize({scope:'pg-cascade',compilation:first.compilation});
         assert.equal(initial.created,true);
         const parent=(await (await first.provider.get({path:'/app/parent'})).create({record:{}})).record;
@@ -361,11 +362,11 @@ test('PostgreSQL selected foreign-key actions cascade and must match on history 
         await first.close({preserveSchema:true});
         first=undefined;
 
-        reopened=await open({schemas,trustedPackages:['@teqfw/dem'],foreignKeyActions,searchPath:[namespace],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
+        reopened=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
         assert.equal((await reopened.provider.initialize({scope:'pg-cascade',compilation:reopened.compilation})).created,false);
         const before=(await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records;
-        const defaultBackend=await reopened.adapter.open({model:reopened.model,connection:reopened.connection});
-        await assert.rejects(()=>defaultBackend.initialize({scope:'pg-cascade',compilation:reopened.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        const defaultBackend=await reopened.adapter.open({model:reopened.model,connection:reopened.connection,runtime:reopened.runtime});
+        await defaultBackend.initialize({scope:'pg-cascade',compilation:reopened.compilation});
         await defaultBackend.close();
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
         await reopened.db('app_parent').where({id:'20'}).delete();

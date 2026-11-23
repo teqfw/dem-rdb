@@ -36,50 +36,47 @@ On an empty database, `initialize` creates the ordinary tables in the Effective 
 
 Every entity uses one ordinary SQL table. Its name is the DEM path without the leading slash, with `/` replaced by `_` (`/pde/gate/account` becomes `pde_gate_account`). Column names exactly match DEM attribute names. No private row or field metadata is added. If table, column, or generated constraint identifiers exceed the selected database's limits, or two paths collapse to the same table name, the adapter rejects the model instead of hashing names.
 
-The adapter supports SQLite, PostgreSQL and MariaDB through Knex. It implements DEM repository CRUD/list operations and ordered atomic batches. Core logical values use native SQL types where the engine can preserve their meaning. Unsupported types, values, disabled relation enforcement, malformed existing tables and physical limits fail explicitly. Extension types, including `idb.CryptoKey`, are unsupported by this relational adapter. SQLite requires a single connection and enabled foreign keys. MariaDB requires InnoDB, 16 KiB pages, strict SQL mode and enabled foreign-key checks. PostgreSQL target schemas must exist and be first in the configured search path. The host installs the database driver.
+The adapter supports SQLite, PostgreSQL and MariaDB through Knex. It implements DEM repository CRUD/list operations and ordered atomic batches. Core logical values use native SQL types where the engine can preserve their meaning. Unsupported types, values, malformed existing tables and physical limits fail explicitly. DEM-RDB supports its own vector extension on SQLite and PostgreSQL; other extension types, including `idb.CryptoKey`, are unsupported. SQLite requires a single connection and enabled foreign keys. MariaDB requires InnoDB, 16 KiB pages, strict SQL mode and enabled foreign-key checks. PostgreSQL target schemas must exist and be first in the configured search path. The host installs the database driver.
 
-Core vectors use portable JSON-serialized text by default; this does not require
-pgvector. To select PostgreSQL-native `vector(N)` for a dense float Core vector,
-the host can pass a per-attribute `nativeVectors` map when opening the adapter:
-
-```js
-const backend = await adapter.open({
-    model: compilation.model,
-    connection,
-    nativeVectors: {'/app/item': {embedding: true}},
-});
-```
-
-The keys are effective entity paths and attribute names. The Provider receives
-the same map in the object returned by its host Configuration. Provision a
-compatible PostgreSQL `vector` extension before opening the adapter. Native
-storage accepts normalized components only when they are exactly representable
-as finite float32 values; values that would lose precision are rejected. The
-declared dimension is enforced; reopening a history-managed scope verifies the
-physical column type and dimension. All backends sharing a scope must use
-compatible selections. The host performs representation and data migrations
-explicitly; initialization does not convert existing columns.
-
-The host can opt a relation into physical cascading actions without changing the
-DEM Format 2 descriptor. Pass `foreignKeyActions` to `adapter.open` or in the
-Provider's host Configuration:
+DEM-RDB publishes the logical type `teqfw.dem_rdb.vector` through
+`TeqFw_Dem_RDb_Type_Vector_Provider$` and its runtime handler through
+`TeqFw_Dem_RDb_Type_Vector_Handler$`. Register the definition before compiling a
+model and bind the handler to the model's DEM Runtime before opening the adapter:
 
 ```js
-const foreignKeyActions = {
-    '/app/child': {
-        parent: {onDelete: 'CASCADE', onUpdate: 'CASCADE'},
-    },
-};
-const backend = await adapter.open({model: compilation.model, connection, foreignKeyActions});
+const vectorTypes = await container.get('TeqFw_Dem_RDb_Type_Vector_Provider$');
+registry.register(vectorTypes.getDefinitions());
+// Compile after registering the definition.
+const handler = await container.get('TeqFw_Dem_RDb_Type_Vector_Handler$');
+const runtime = await repositoryRuntime.bind({model: compilation.model, registry, handlers: {'teqfw.dem_rdb.vector': handler}});
+const backend = await adapter.open({model: compilation.model, connection, runtime});
 ```
 
-The keys are effective entity paths and relation names. Each event may be
-omitted or set to `CASCADE`; omitted events use the engine's non-cascading
-default (`NO ACTION` or `RESTRICT`). Initialization creates the selected actions
-for new tables and checks existing history-managed layouts before access. It does
-not alter existing constraints; hosts must migrate them explicitly. SQLite and
-PostgreSQL cascade scenarios are covered by integration tests. MariaDB
-integration requires a separately configured database.
+The type is a dense array of finite numbers with required positive `dimensions`.
+It has no equality or ordering property, so vectors cannot be keys, relations,
+filters or sort keys; repository CRUD stores and returns the declared value.
+PostgreSQL uses pgvector `vector(N)` and explicitly rounds each component to
+float32 at the storage boundary, which can lose precision. Dimensions above
+pgvector's 2000 component limit and values outside finite float32 capacity fail
+before persistence. SQLite stores canonical JSON arrays in `TEXT`, preserving
+supported JavaScript number precision on readback. MariaDB and PostgreSQL without
+a visible pgvector extension reject a model that uses this type. Reopening a
+history-managed scope verifies the physical column type and dimension; initialization
+does not convert existing columns.
+
+Relation actions are declared in the DEM Format 2 descriptor and control both
+the logical Batch behavior and physical SQL constraint:
+
+```js
+child: {attributes: [{name: 'parent_id', type: {name: 'ref'}}], relations: {
+    parent: {attributes: ['parent_id'], onDelete: 'cascade', onUpdate: 'restrict', target: {path: '../parent', attributes: ['id']}},
+}}
+```
+
+`onDelete` and `onUpdate` accept `restrict` or `cascade` independently; omission
+means `restrict`. SQL actions come only from the compiled DEM. Initialization
+creates the selected actions for new tables and checks existing layouts before
+access. It does not alter existing constraints; hosts must migrate them explicitly.
 
 For each Core enum attribute, DEM-RDB creates a named SQL `CHECK` from the
 alternatives in the DEM descriptor. On SQLite, PostgreSQL and MariaDB it also

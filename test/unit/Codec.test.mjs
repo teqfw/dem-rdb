@@ -15,25 +15,24 @@ test('unsafe driver numeric conversion and invalid UTF8 fail explicitly',()=>{
     assert.throws(()=>codec.decode(entity,{wide:9007199254740992}),{code:'STORAGE'});
     assert.throws(()=>codec.decode({attributes:[{name:'text',type:{name:'text'}}]},{text:Buffer.from([255])}),{code:'STORAGE'});
 });
-test('native PostgreSQL vectors require exact float32 values and preserve widened values',()=>{
-    const attribute={name:'embedding',type:{name:'vector',params:{dimensions:3,element:'float'}}};
+test('PostgreSQL vector codec explicitly stores widened float32 values',()=>{
+    const attribute={name:'embedding',type:{name:'teqfw.dem_rdb.vector',params:{dimensions:3}}};
     const entity={attributes:[attribute],primaryKey:null,uniqueKeys:{},indexes:{},relations:{}};
-    const nativeVectors={embedding:true};
-    const record={embedding:[0.10000000149011612,1.401298464324817e-45,-2]};
-    const encoded=codec.encode({entity,record,dialect:'pg',nativeVectors});
-    assert.equal(encoded.embedding,'[0.10000000149011612,1.401298464324817e-45,-2]');
-    assert.deepEqual(codec.decode(entity,encoded,nativeVectors),record);
-    assert.deepEqual(codec.decode(entity,{embedding:'[0.10000000149011612,1.401298464324817e-45,-2]'},nativeVectors),record);
-    assert.throws(()=>codec.encode({entity,record:{embedding:[0.1,0,0]},dialect:'pg',nativeVectors}),{code:'UNSUPPORTED'});
-    assert.throws(()=>codec.encode({entity,record:{embedding:[1,2]},dialect:'pg',nativeVectors}),{code:'UNSUPPORTED'});
-    assert.throws(()=>codec.encode({entity,record:{embedding:[Infinity,0,0]},dialect:'pg',nativeVectors}),{code:'UNSUPPORTED'});
-    assert.throws(()=>codec.type({attribute,dialect:'sqlite3',indexed:false,nativeVector:true}),{code:'UNSUPPORTED'});
-});
-test('unselected vectors retain portable JSON text storage',()=>{
-    const attribute={name:'embedding',type:{name:'vector',params:{dimensions:2,element:'float'}}};
-    const entity={attributes:[attribute],primaryKey:null,uniqueKeys:{},indexes:{},relations:{}};
-    const record={embedding:[0.1,2]};
+    const record={embedding:[-0,1.401298464324817e-45,-2]};
     const encoded=codec.encode({entity,record,dialect:'pg'});
-    assert.equal(encoded.embedding,'[0.1,2]');
+    assert.equal(encoded.embedding,'[-0,1.401298464324817e-45,-2]');
+    assert.deepEqual(codec.decode(entity,encoded),{embedding:[-0,1.401298464324817e-45,-2]});
+    assert.throws(()=>codec.encode({entity,record:{embedding:[1,2]},dialect:'pg'}),{code:'UNSUPPORTED'});
+    assert.throws(()=>codec.encode({entity,record:{embedding:[Number.MAX_VALUE,0,0]},dialect:'pg'}),{code:'UNSUPPORTED'});
+    assert.equal(codec.type({attribute,dialect:'pg',indexed:false}),'vector(3)');
+    assert.throws(()=>codec.type({attribute,dialect:'mysql2',indexed:false}),{code:'UNSUPPORTED'});
+});
+test('SQLite vectors use precision-preserving JSON text',()=>{
+    const attribute={name:'embedding',type:{name:'teqfw.dem_rdb.vector',params:{dimensions:2}}};
+    const entity={attributes:[attribute],primaryKey:null,uniqueKeys:{},indexes:{},relations:{}};
+    const record={embedding:[-0,1.2345678901234567]};
+    const encoded=codec.encode({entity,record,dialect:'sqlite3'});
+    assert.equal(encoded.embedding,'[-0,1.2345678901234567]');
     assert.deepEqual(codec.decode(entity,encoded),record);
+    assert.equal(codec.type({attribute,dialect:'sqlite3',indexed:false}),'text');
 });

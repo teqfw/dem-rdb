@@ -6,28 +6,31 @@ import {join} from 'node:path';
 import {test} from 'node:test';
 import Container from '@teqfw/di';
 
-const conformanceContainer = new Container();
-conformanceContainer.addNamespaceRoot('TeqFw_Dem_', demNamespace.dirAbs, '.mjs');
+const conformanceContainer = new Container({namespaces:[{prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'}]});
 const {register} = await conformanceContainer.get('TeqFw_Dem_Conformance_Repository$');
 const {schema:valueSchema,map:valueMap,exercise} = await conformanceContainer.get('TeqFw_Dem_Conformance_Values$');
 const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer.get('TeqFw_Dem_Conformance_Atomic$');
 
 
-async function open({schema,map,schemas,trustedPackages=[],foreignKeyActions={},filename=':memory:',createSchema=true}) {
-    const c = new Container();
-    c.addNamespaceRoot('TeqFw_Dem_', demNamespace.dirAbs, '.mjs');
-    c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
-    (await c.get('TeqFw_Dem_Registry$')).finalize();
+async function open({schema,map,schemas,trustedPackages=[],filename=':memory:',createSchema=true}) {
+    const c = new Container({namespaces:[
+        {prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'},
+        {prefix:'TeqFw_Dem_RDb_',target:new URL('../src', import.meta.url).pathname,defaultExt:'.mjs'},
+    ]});
+    const registry=await c.get('TeqFw_Dem_Registry$');
+    registry.register((await c.get('TeqFw_Dem_RDb_Type_Vector_Provider$')).getDefinitions());registry.finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const compilation = await compiler.exec({schemas:schemas ?? [{packageName:'test',filename:'schema.json',document:schema}],trustedPackages,...(map ? {map:{packageName:'test',filename:'map.json',document:map}} : {})});
     const {model} = compilation;
+    const vectorHandler=await c.get('TeqFw_Dem_RDb_Type_Vector_Handler$');
+    const runtime=await (await c.get('TeqFw_Dem_Repository_Runtime$')).bind({model,registry,handlers:[vectorHandler]});
     const connection = await c.get('TeqFw_Dem_RDb_Connection$');
     await connection.init({client:'sqlite3',connection:{filename},useNullAsDefault:true,pool:{min:1,max:1}});
     const db = connection.getClient();
     const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
-    const provider = await adapter.open({model,connection,foreignKeyActions});
+    const provider = await adapter.open({model,connection,runtime});
     if (createSchema) await provider.createSchema();
-    return {provider,model,compilation,compiler,adapter,db,connection,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>connection.disconnect()};
+    return {provider,model,compilation,compiler,adapter,db,connection,runtime,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:()=>connection.disconnect()};
 }
 register({test,assert,open});
 
@@ -100,9 +103,10 @@ test('schema creation is explicit and rejects an existing target', async () => {
 });
 
 test('unsupported model is rejected before database effects', async () => {
-    const c = new Container();
-    c.addNamespaceRoot('TeqFw_Dem_', demNamespace.dirAbs, '.mjs');
-    c.addNamespaceRoot('TeqFw_Dem_RDb_', new URL('../src', import.meta.url).pathname, '.mjs');
+    const c = new Container({namespaces:[
+        {prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'},
+        {prefix:'TeqFw_Dem_RDb_',target:new URL('../src',import.meta.url).pathname,defaultExt:'.mjs'},
+    ]});
     (await c.get('TeqFw_Dem_Registry$')).finalize();
     const compiler = await c.get('TeqFw_Dem_Compile$');
     const compiled=await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:{$format:2,$namespace:'/app/',record:{attributes:[{name:'data',type:{name:'json'}}]}}}]});
@@ -350,17 +354,13 @@ test('provider rejects missing uniqueness and foreign key constraints', async ()
 });
 
 
-test('explicit foreign-key cascade policy applies to multilevel delete/update and is validated on reopen',async()=>{
+test('DEM foreign-key actions apply to multilevel delete/update and are validated on reopen',async()=>{
     const schema={$format:2,$namespace:'/app/',
         parent:{attributes:[{name:'id',type:{name:'identity'},generation:true}]},
-        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],target:{path:'/app/parent',attributes:['id']}}}},
-        grandchild:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'child_id',type:{name:'ref'}}],relations:{child:{attributes:['child_id'],target:{path:'/app/child',attributes:['id']}}}},
+        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],onDelete:'cascade',onUpdate:'cascade',target:{path:'/app/parent',attributes:['id']}}}},
+        grandchild:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'child_id',type:{name:'ref'}}],relations:{child:{attributes:['child_id'],onDelete:'cascade',onUpdate:'cascade',target:{path:'/app/child',attributes:['id']}}}},
     };
-    const foreignKeyActions={
-        '/app/child':{parent:{onDelete:'CASCADE',onUpdate:'CASCADE'}},
-        '/app/grandchild':{child:{onDelete:'CASCADE',onUpdate:'CASCADE'}},
-    };
-    const env=await open({schema,foreignKeyActions});
+    const env=await open({schema});
     let defaultBackend;
     try {
         const parent=(await (await env.provider.get({path:'/app/parent'})).create({record:{}})).record;
@@ -370,8 +370,8 @@ test('explicit foreign-key cascade policy applies to multilevel delete/update an
         assert.equal((await env.db('app_child').where({id:child.id}).first()).parent_id,20);
         await env.db('app_child').where({id:child.id}).update({id:30});
         assert.equal((await env.db('app_grandchild').where({id:grandchild.id}).first()).child_id,30);
-        defaultBackend=await env.adapter.open({model:env.model,connection:env.connection});
-        await assert.rejects(defaultBackend.get({path:'/app/child'}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        defaultBackend=await env.adapter.open({model:env.model,connection:env.connection,runtime:env.runtime});
+        await defaultBackend.get({path:'/app/child'});
         await defaultBackend.close();
         defaultBackend=undefined;
         await env.db('app_parent').where({id:20}).delete();
@@ -381,6 +381,28 @@ test('explicit foreign-key cascade policy applies to multilevel delete/update an
         if(defaultBackend) await defaultBackend.close();
         await env.close();
     }
+});
+
+test('SQLite vectors use JSON TEXT and preserve input numeric precision',async()=>{
+    const schema={$format:2,$namespace:'/app/',item:{attributes:[
+        {name:'id',type:{name:'integer'}},
+        {name:'embedding',type:{name:'teqfw.dem_rdb.vector',params:{dimensions:2}},nullable:true},
+    ],primaryKey:['id']}};
+    const env=await open({schema});
+    try {
+        const column=(await env.db.raw('PRAGMA table_info(app_item)')).find(item=>item.name==='embedding');
+        assert.equal(column.type.toUpperCase(),'TEXT');
+        const repo=await env.provider.get({path:'/app/item'});
+        const input=[-0,1.2345678901234567];
+        const created=await repo.create({record:{id:'1',embedding:input}});
+        input[0]=9;
+        assert.deepEqual(created.record.embedding,[-0,1.2345678901234567]);
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record,created.record);
+        await repo.update({key:{kind:'primary',values:{id:'1'}},changes:{embedding:[0.2,2.345678901234567]}});
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record.embedding,[0.2,2.345678901234567]);
+        await assert.rejects(repo.create({record:{id:'2',embedding:[1]}}),{code:'INVALID_INPUT'});
+        await assert.rejects(repo.list({selection:{where:{kind:'call',operator:'eq',args:[{kind:'attr',name:'embedding'},{kind:'value',value:[0.2,2.345678901234567]}]}}}),{code:'INVALID_INPUT'});
+    } finally { await env.close(); }
 });
 
 test('enum alternatives are enforced by named SQL checks including direct writes and nullable values',async()=>{

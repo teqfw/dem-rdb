@@ -12,10 +12,6 @@ export interface RdbConfiguration {
     model: DemModel;
     /** DEM Runtime binding for model-scoped Core or extension operations. */
     runtime?: RdbRuntime;
-    /** PostgreSQL vector columns selected by canonical DEM path and attribute name. */
-    nativeVectors?: Record<string, Record<string, true>>;
-    /** Explicit referential actions selected by canonical child path and relation name. */
-    foreignKeyActions?: Record<string, Record<string, {onDelete?: 'CASCADE'; onUpdate?: 'CASCADE'}>>;
 }
 export interface RdbConnection {
     init(configuration: Readonly<Record<string, any>>): Promise<void>;
@@ -47,7 +43,13 @@ declare global {
     type TeqFw_Dem_RDb_Config__Class = typeof import("./src/Config.mjs").default;
     type TeqFw_Dem_RDb_Connection = import("./src/Connection.mjs").default;
     type TeqFw_Dem_RDb_Connection__Class = typeof import("./src/Connection.mjs").default;
+    type TeqFw_Dem_RDb_ForeignActionEvent = 'onDelete' | 'onUpdate';
     type TeqFw_Dem_RDb_Provider = import("./src/Provider.mjs").default;
     type TeqFw_Dem_RDb_Provider__Class = typeof import("./src/Provider.mjs").default;
+    type TeqFw_Dem_RDb_Type_Vector_Handler = import("./src/Type/Vector/Handler.mjs").default;
+    type TeqFw_Dem_RDb_Type_Vector_Handler__Class = typeof import("./src/Type/Vector/Handler.mjs").default;
+    type TeqFw_Dem_RDb_Type_Vector_Provider = import("./src/Type/Vector/Provider.mjs").default;
+    type TeqFw_Dem_RDb_Type_Vector_Provider__Class = typeof import("./src/Type/Vector/Provider.mjs").default;
+    type TeqFw_Dem_RDb_VectorParams = {dimensions: number};
 }
 export {};
