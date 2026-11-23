@@ -17,6 +17,10 @@ const connection = {
     ...(process.env.TEQFW_DB__PG_PASSWORD ? {password:process.env.TEQFW_DB__PG_PASSWORD} : {}),
     ...(process.env.TEQFW_DB__PG_DATABASE ? {database:process.env.TEQFW_DB__PG_DATABASE} : {}),
 };
+const missingConfiguration=['host','user','password','database'].filter(name=>!connection[name]);
+if (missingConfiguration.length)
+    throw new Error('PostgreSQL integration requires TEQFW_DB__PG_HOST, TEQFW_DB__PG_USER, TEQFW_DB__PG_PASSWORD and TEQFW_DB__PG_DATABASE; missing: '+missingConfiguration.join(', ')+'.');
+
 function container() {
     return new Container({namespaces:[
         {prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'},
