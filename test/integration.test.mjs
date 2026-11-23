@@ -402,6 +402,48 @@ test('repository update returns values changed by a self-referential cascade',as
     } finally {await env.close();}
 });
 
+test('SQLite rejects stored constraints with altered semantics', async () => {
+    const schema = {$format:2,$namespace:'/app/',
+        parent:{attributes:[{name:'id',type:{name:'integer'}}],primaryKey:['id']},
+        item:{attributes:[
+            {name:'id',type:{name:'integer'}},
+            {name:'state',type:{name:'enum',params:{values:['open']}}},
+            {name:'parent_id',type:{name:'integer'}},
+        ],primaryKey:['id'],relations:{parent:{attributes:['parent_id'],target:{path:'/app/parent',attributes:['id']}}}},
+    };
+    const env = await open({schema});
+    const path = '/app/item';
+    try {
+        const {sql} = await env.db('sqlite_master').where({type:'table',name:'app_item'}).first('sql');
+        const replaceLayout = async ddl => {
+            assert.notEqual(ddl,sql);
+            await env.db.schema.dropTable('app_item');
+            await env.db.raw(ddl);
+        };
+        await replaceLayout(sql.replace('`state` text','`state` text COLLATE NOCASE'));
+        await env.db('app_parent').insert({id:1});
+        await env.db('app_item').insert({id:1,state:'OPEN',parent_id:1});
+        await assert.rejects(env.provider.get({path}),{code:'UNSUPPORTED'});
+
+        const expected = "constraint app_item_e_state check (`state` in ('open'))";
+        await replaceLayout(sql.replace(expected, `/* ${expected} */ constraint app_item_e_state check (1)`));
+        await assert.rejects(env.provider.get({path}),{code:'UNSUPPORTED'});
+
+        await replaceLayout(sql.replace('`parent_id` integer','`parent_id` integer COLLATE NOCASE'));
+        await env.provider.get({path});
+
+        await replaceLayout(sql.replace('references `app_parent`(`id`)', 'references `app_parent`(`id`) DEFERRABLE INITIALLY DEFERRED'));
+        await assert.rejects(env.provider.get({path}),{code:'UNSUPPORTED'});
+
+        await env.db.schema.dropTable('app_item');
+        await env.db.raw(sql);
+        const repo = await env.provider.get({path});
+        await env.db.raw('PRAGMA defer_foreign_keys = ON');
+        await assert.rejects(repo.create({record:{id:'1',state:'open',parent_id:'1'}}),{code:'UNSUPPORTED'});
+        assert.deepEqual(await env.db('app_item').select('*'),[]);
+    } finally { await env.close(); }
+});
+
 test('SQLite vectors use JSON TEXT and preserve input numeric precision after reopening',async t=>{
     const schema={$format:2,$namespace:'/app/',item:{attributes:[
         {name:'id',type:{name:'integer'}},
@@ -410,9 +452,14 @@ test('SQLite vectors use JSON TEXT and preserve input numeric precision after re
     const directory=await mkdtemp(join(tmpdir(),'dem-rdb-vector-'));
     t.after(()=>rm(directory,{recursive:true,force:true}));
     const filename=join(directory,'vectors.sqlite');
-    const env=await open({schema,filename});
+    const infrastructure=await acquireDemSchema(conformanceContainer);
+    const schemas=[{packageName:'@example/app',filename:'etc/dem-schema.json',document:schema},infrastructure];
+    const options={schemas,trustedPackages:['@teqfw/dem'],filename,createSchema:false};
+    const scope='sqlite-vector';
+    const env=await open(options);
     const updated=[0.2,2.345678901234567];
     try {
+        assert.equal((await env.provider.initialize({scope,compilation:env.compilation})).created,true);
         const column=(await env.db.raw('PRAGMA table_info(app_item)')).find((/** @type {{name:string,type:string}} */ item)=>item.name==='embedding');
         assert.equal(column.type.toUpperCase(),'TEXT');
         const repo=await env.provider.get({path:'/app/item'});
@@ -423,16 +470,32 @@ test('SQLite vectors use JSON TEXT and preserve input numeric precision after re
         assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record,created.record);
         await repo.update({key:{kind:'primary',values:{id:'1'}},changes:{embedding:updated}});
         assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record.embedding,updated);
+        await repo.create({record:{id:'2',embedding:null}});
+        assert.equal((await repo.read({key:{kind:'primary',values:{id:'2'}}})).record.embedding,null);
+        await assert.rejects(env.provider.execute({operations:[
+            {path:'/app/item',method:'update',params:{key:{kind:'primary',values:{id:'1'}},changes:{embedding:[3,4]}}},
+            {path:'/app/item',method:'create',params:{record:{id:'2',embedding:[5,6]}}},
+        ]}),{code:'CONFLICT'});
         const stored=await env.db('app_item').where({id:'1'}).first('embedding');
         assert.equal(typeof stored.embedding,'string');
         assert.deepEqual(JSON.parse(stored.embedding),updated);
         await assert.rejects(repo.create({record:{id:'2',embedding:[1]}}),{code:'INVALID_INPUT'});
         await assert.rejects(repo.list({selection:{where:{kind:'call',operator:'eq',args:[{kind:'attr',name:'embedding'},{kind:'value',value:[0.2,2.345678901234567]}]}}}),{code:'INVALID_INPUT'});
     } finally { await env.provider.close(); await env.close(); }
-    const reopened=await open({schema,filename,createSchema:false});
+    const reopened=await open(options);
     try {
+        assert.equal((await reopened.provider.initialize({scope,compilation:reopened.compilation})).created,false);
         const repo=await reopened.provider.get({path:'/app/item'});
         assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record.embedding,updated);
+        const history=await reopened.db('dem_application').select('*');
+        await reopened.db.raw('CREATE TABLE app_item_replacement (id INTEGER PRIMARY KEY, embedding BLOB)');
+        await reopened.db.raw('INSERT INTO app_item_replacement SELECT * FROM app_item');
+        await reopened.db.schema.dropTable('app_item');
+        await reopened.db.schema.renameTable('app_item_replacement','app_item');
+        const rows=await reopened.db('app_item').select('*').orderBy('id');
+        await assert.rejects(reopened.provider.initialize({scope,compilation:reopened.compilation}),{code:'UNSUPPORTED'});
+        assert.deepEqual(await reopened.db('app_item').select('*').orderBy('id'),rows);
+        assert.deepEqual(await reopened.db('dem_application').select('*'),history);
     } finally { await reopened.provider.close(); await reopened.close(); }
 });
 

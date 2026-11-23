@@ -319,13 +319,20 @@ test('PostgreSQL vectors explicitly round to float32 and reject incompatible lay
         await assert.rejects(repo.create({record:{embedding:[0.1,2]}}),{code:'INVALID_INPUT'});
         await assert.rejects(repo.create({record:{embedding:[Number.MAX_VALUE,0,0]}}),{code:'UNSUPPORTED'});
         assert.deepEqual((await repo.list({selection:{}})).records,[updated]);
+        const nullable=(await repo.create({record:{embedding:null}})).record;
+        assert.equal((await repo.read({key:{kind:'primary',values:{id:nullable.id}}})).record.embedding,null);
+        await assert.rejects(first.provider.execute({operations:[
+            {path:'/app/item',method:'update',params:{key:{kind:'primary',values:{id:created.id}},changes:{embedding:[5,6,7]}}},
+            {path:'/app/item',method:'create',params:{record:{id:created.id,embedding:[8,9,10]}}},
+        ]}),{code:'CONFLICT'});
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:created.id}}})).record,updated);
         await first.close({preserveSchema:true});
         first=undefined;
 
         reopened=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace,'public'],createSchema:false,createNamespace:false,ownsNamespace:true,namespace});
         const history=await reopened.provider.initialize({scope:'pg-native-vector',compilation:reopened.compilation});
         assert.equal(history.created,false);
-        assert.deepEqual((await (await reopened.provider.get({path:'/app/item'})).list({selection:{}})).records,[updated]);
+        assert.deepEqual((await (await reopened.provider.get({path:'/app/item'})).list({selection:{}})).records,[updated,nullable]);
 
         const before=(await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records;
         await assert.rejects(()=>reopened.adapter.open({model:reopened.model,connection:reopened.connection}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
@@ -341,6 +348,12 @@ test('PostgreSQL vectors explicitly round to float32 and reject incompatible lay
         const changedBackend=await reopened.adapter.open({model:changed.model,connection:reopened.connection,runtime:reopened.bindRuntime(changed.model)});
         await assert.rejects(()=>changedBackend.initialize({scope:'pg-native-vector',compilation:changed}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
         await changedBackend.close();
+        assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
+
+        await reopened.db.raw('ALTER TABLE app_item ALTER COLUMN embedding TYPE text USING embedding::text');
+        const rows=await reopened.db('app_item').select('*').orderBy('id');
+        await assert.rejects(reopened.provider.initialize({scope:'pg-native-vector',compilation:reopened.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        assert.deepEqual(await reopened.db('app_item').select('*').orderBy('id'),rows);
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
     } finally {
         if(reopened) await reopened.close();

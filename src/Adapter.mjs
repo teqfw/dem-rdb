@@ -36,26 +36,20 @@ export default class Adapter {
         const table = path => path.slice(1).replaceAll('/', '_');
         /** @param {string} path @param {string} attribute @returns {string} */
         const enumConstraint = (path,attribute) => `${table(path)}_e_${attribute}`;
-        /** @param {string} sql @returns {number} */
-        const countSqlChecks = sql => {
-            let count=0,quote=null;
-            for (let i=0;i<sql.length;i++) {
-                const ch=sql[i];
-                if (quote) {
-                    if (quote==='[' && ch===']') quote=null;
-                    else if (ch===quote) {
-                        if ((quote==="'" || quote==='"' || quote==='`') && sql[i+1]===quote) i++;
-                        else quote=null;
-                    }
-                    continue;
-                }
-                if (ch==="'" || ch==='"' || ch==='`' || ch==='[') {quote=ch;continue;}
-                if (sql.slice(i,i+5).toLowerCase()==='check' && !/[a-z0-9_]/i.test(sql[i+5] ?? '')) {
-                    if (i===0 || !/[a-z0-9_]/i.test(sql[i-1])) count++;
-                    i+=4;
-                }
+        /** @param {string} sql @returns {string[]} */
+        const sqliteTokens = sql => (sql.match(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[\w$\u0080-\uffff]+|[^\s]/gu) ?? [])
+            .filter(token => !token.startsWith('--') && !token.startsWith('/*'));
+        /** @param {string[]} tokens @returns {string[][]} */
+        const sqliteTableClauses = tokens => {
+            const clauses = [[]];
+            let depth = 1;
+            for (const token of tokens.slice(tokens.indexOf('(') + 1)) {
+                if (token === '(') depth++;
+                if (token === ')' && --depth === 0) break;
+                if (token === ',' && depth === 1) clauses.push([]);
+                else clauses.at(-1).push(token);
             }
-            return count;
+            return clauses;
         };
         /**
          * @param {any} error
@@ -90,6 +84,8 @@ export default class Adapter {
         const ensureForeignKeys = async trx => {
             const rows = await trx.raw('PRAGMA foreign_keys');
             if (Number(rows?.[0]?.foreign_keys) !== 1) fail('UNSUPPORTED', 'SQLite foreign key enforcement is disabled.');
+            const deferred = await trx.raw('PRAGMA defer_foreign_keys');
+            if (Number(deferred?.[0]?.defer_foreign_keys) !== 0) fail('UNSUPPORTED', 'SQLite foreign key enforcement is deferred.');
         };
         /** @param {any} trx @returns {Promise<void>} */
         const ensureEnumChecks = async trx => {
@@ -378,14 +374,22 @@ export default class Adapter {
                         fail('UNSUPPORTED', 'Database uniqueness does not match the effective model.');
                     const enumAttributes=entity.attributes.filter(attribute=>attribute.type.name==='enum');
                     const tableDefinition=await knex('sqlite_master').select('sql').where({type:'table',name:table(path)}).first();
-                    const sql=String(tableDefinition?.sql ?? '');
-                    if (countSqlChecks(sql)!==enumAttributes.length) fail('UNSUPPORTED','Database enum checks do not match the effective model.');
+                    const tokens=sqliteTokens(String(tableDefinition?.sql ?? ''));
+                    const keywords=tokens.map(token=>token.toLowerCase());
+                    if (keywords.filter(token=>token==='check').length!==enumAttributes.length) fail('UNSUPPORTED','Database enum checks do not match the effective model.');
+                    const clauses=enumAttributes.length ? sqliteTableClauses(keywords) : [];
                     for (const attribute of enumAttributes) {
                         const name=enumConstraint(path,attribute.name);
+                        const column=clauses.find(([identifier])=>[attribute.name,`"${attribute.name}"`,`\`${attribute.name}\``,`[${attribute.name}]`,`'${attribute.name}'`].includes(identifier));
+                        if (!column || column.some((token,index)=>token==='collate' && !['binary','"binary"','`binary`','[binary]',"'binary'"].includes(column[index+1])))
+                            fail('UNSUPPORTED','SQLite enum columns require binary collation.');
                         const values=(/** @type {string[]} */ ((/** @type {any} */ (attribute.type.params)).values)).map(value=>`'${value.replaceAll("'","''")}'`).join(',');
-                        const expected=`constraint ${name} check (\`${attribute.name}\` in (${values}))`;
-                        if (!sql.includes(expected)) fail('UNSUPPORTED','Database enum check does not match the declared alternatives.');
+                        const expected=sqliteTokens(`constraint ${name} check (\`${attribute.name}\` in (${values}))`);
+                        if (!tokens.some((token,index)=>token==='constraint' && expected.every((part,offset)=>tokens[index+offset]===part)))
+                            fail('UNSUPPORTED','Database enum check does not match the declared alternatives.');
                     }
+                    if (Object.keys(entity.relations).length && keywords.some((token,index)=>token==='initially' && keywords[index+1]==='deferred'))
+                        fail('UNSUPPORTED','SQLite foreign keys must be checked before the next command.');
                     const foreignKeys = /** @type {TeqFw_Dem_RDb_RawRow[]} */ (await knex.raw('SELECT id, seq, "table" AS target_table, "from" AS local_name, "to" AS target_name, on_update, on_delete FROM pragma_foreign_key_list(?) ORDER BY id, seq', [table(path)]));
                     const actualRelations = [];
                     for (const id of new Set(foreignKeys.map(key => key.id))) {
