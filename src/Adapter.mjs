@@ -106,9 +106,10 @@ export default class Adapter {
          * @param {any} entity
          * @param {any} row
          * @param {any} [normalizer]
+         * @param {string} [dialect]
          * @returns {any}
          */
-        const fromDb = (entity,row,normalizer=normalize) => codec.decode(entity,row && !Object.hasOwn(row,'__proto__') && Object.hasOwn(row,'$dem_proto') ? Object.fromEntries([...Object.entries(row),['__proto__',row.$dem_proto]]) : row,normalizer);
+        const fromDb = (entity,row,normalizer=normalize,dialect='sqlite3') => codec.decode(entity,row && !Object.hasOwn(row,'__proto__') && Object.hasOwn(row,'$dem_proto') ? Object.fromEntries([...Object.entries(row),['__proto__',row.$dem_proto]]) : row,normalizer,dialect);
         /**
          * @param {any} entity
          * @param {any} record
@@ -292,6 +293,7 @@ export default class Adapter {
             let initialized=!historyManaged || options[historyAccess] === true;
             const pg = knex.client.config.client === 'pg';
             const mysql = knex.client.config.client === 'mysql2';
+            const dialect=pg?'pg':mysql?'mysql2':'sqlite3';
             if (mysql && hasVectors) fail('UNSUPPORTED','DEM-RDB vectors are supported only by PostgreSQL and SQLite.');
             const deferredForeign = pg || mysql;
             const maxIdentifier = pg ? 63 : mysql ? 64 : 255;
@@ -427,13 +429,13 @@ export default class Adapter {
                                     const [rows]=await trx.raw('SELECT CAST(LAST_INSERT_ID() AS CHAR) AS id');
                                     Object.defineProperty(value,generated.name,{value:rows[0].id,enumerable:true,writable:true,configurable:true});
                                 }
-                                return {record: fromDb(entity, value,norm)};
+                                return {record: fromDb(entity, value,norm,dialect)};
                             }
                             const rows = await trx(table(path)).insert(value).returning(projection(entity,trx));
-                            return {record: fromDb(entity, rows[0],norm)};
+                            return {record: fromDb(entity, rows[0],norm,dialect)};
                         });
                     }),
-                    read: async params => wrap(async () => { shape(params, ['key']); return {record: fromDb(entity, await query().where(key(params.key)).first(),norm)}; }),
+                    read: async params => wrap(async () => { shape(params, ['key']); return {record: fromDb(entity, await query().where(key(params.key)).first(),norm,dialect)}; }),
                     update: async params => wrap(async () => {
                         shape(params, ['key', 'changes']);
                         const values = key(params.key), changes = toDb(entity, norm.record({entity, record:params.changes, mode:'update'}), pg, mysql);
@@ -445,10 +447,10 @@ export default class Adapter {
                                 const before = await trx(table(path)).select(projection(entity,trx)).where(values).forUpdate().first();
                                 if (!before) return {record:null};
                                 await trx(table(path)).where(values).update(changes);
-                                return {record:fromDb(entity, {...before,...changes},norm)};
+                                return {record:fromDb(entity, {...before,...changes},norm,dialect)};
                             }
                             const rows = await trx(table(path)).where(values).update(changes).returning(projection(entity,trx));
-                            return {record: fromDb(entity, rows[0],norm)};
+                            return {record: fromDb(entity, rows[0],norm,dialect)};
                         });
                     }),
                     delete: async params => wrap(async () => { shape(params, ['key']); const values = key(params.key); return knex.transaction(async trx => { if (!deferredForeign) await ensureForeignKeys(trx);
@@ -457,7 +459,7 @@ export default class Adapter {
                         shape(params, ['selection']);
                         const s = selectionOps.create({entity, selection:params.selection});
                         if (entity.attributes.some(a=>mysql && codec.type({attribute:a,dialect:'mysql2',indexed:codec.indexed(entity,a.name)})==='longblob' || ['decimal','datetime','binary','json','teqfw.dem_rdb.vector'].includes(a.type.name) || a.type.name==='integer' && (a.type.params.bits===64 || a.type.params.unsigned && a.type.params.bits===32)))
-                            return selectOps.exec({entity,records:(await query()).map(row=>fromDb(entity,row,norm)),selection:s});
+                            return selectOps.exec({entity,records:(await query()).map(row=>fromDb(entity,row,norm,dialect)),selection:s});
                         /**
                          * @param {any} node
                          * @returns {any}
@@ -478,7 +480,7 @@ export default class Adapter {
                         for (const o of s.orderBy) { q = q.orderByRaw('?? IS NULL ' + (o.nulls === 'first' ? 'DESC' : 'ASC'), [table(path)+'.'+o.attribute]).orderBy(table(path)+'.'+o.attribute,o.direction); }
                         if (s.limit !== null) q = q.limit(s.limit);
                         if (s.offset) q = q.offset(s.offset);
-                            return {records:(await q).map(row => fromDb(entity,row,norm))};
+                            return {records:(await q).map(row => fromDb(entity,row,norm,dialect))};
                     }),
                 };
             };

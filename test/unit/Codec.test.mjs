@@ -21,7 +21,8 @@ test('PostgreSQL vector codec explicitly stores widened float32 values',()=>{
     const record={embedding:[-0,1.401298464324817e-45,-2]};
     const encoded=codec.encode({entity,record,dialect:'pg'});
     assert.equal(encoded.embedding,'[-0,1.401298464324817e-45,-2]');
-    assert.deepEqual(codec.decode(entity,encoded),{embedding:[-0,1.401298464324817e-45,-2]});
+    assert.deepEqual(codec.decode(entity,encoded,undefined,'pg'),{embedding:[-0,1.401298464324817e-45,-2]});
+    assert.deepEqual(codec.decode(entity,{embedding:'[-0,0.1,1e-45]'},undefined,'pg'),{embedding:[-0,Math.fround(0.1),Math.fround(1e-45)]});
     assert.throws(()=>codec.encode({entity,record:{embedding:[1,2]},dialect:'pg'}),{code:'UNSUPPORTED'});
     assert.throws(()=>codec.encode({entity,record:{embedding:[Number.MAX_VALUE,0,0]},dialect:'pg'}),{code:'UNSUPPORTED'});
     assert.equal(codec.type({attribute,dialect:'pg',indexed:false}),'vector(3)');

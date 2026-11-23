@@ -91,8 +91,8 @@ export default class Codec {
                 return [key,value];
             }));
         };
-        /** @param {any} entity @param {any} row @param {any} [normalizer] @returns {any} */
-        this.decode = function (entity,row,normalizer=normalize) {
+        /** @param {any} entity @param {any} row @param {any} [normalizer] @param {string} [dialect] @returns {any} */
+        this.decode = function (entity,row,normalizer=normalize,dialect='sqlite3') {
             if (!row) return null;
             try {
                 const result=Object.fromEntries(entity.attributes.map(a=>{
@@ -116,7 +116,10 @@ export default class Codec {
                     if (a.type.name==='teqfw.dem_rdb.vector') {
                         const parsed=typeof value==='string' ? JSON.parse(value) : value;
                         if (!Array.isArray(parsed)) throw new Error('Invalid PostgreSQL vector result');
-                        value=parsed.map(Number);
+                        value=parsed.map(component=>{
+                            const number=Number(component);
+                            return dialect==='pg' ? Math.fround(number) : number;
+                        });
                     } else if (a.type.name==='json') value=JSON.parse(value);
                     return [a.name,value];
                 }));
