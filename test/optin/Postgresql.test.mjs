@@ -10,6 +10,7 @@ const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer
 
 import {randomBytes} from 'node:crypto';
 
+/** @type {Record<string, any>} */
 const connection = {
     ...(process.env.TEQFW_DB__PG_HOST ? {host:process.env.TEQFW_DB__PG_HOST} : {}),
     ...(process.env.TEQFW_DB__PG_PORT ? {port:Number(process.env.TEQFW_DB__PG_PORT)} : {}),
@@ -27,13 +28,17 @@ function container() {
         {prefix:'TeqFw_Dem_RDb_',target:new URL('../../src',import.meta.url).pathname,defaultExt:'.mjs'},
     ]});
 }
+/** @param {any} options */
 async function open({schema,map,schemas,trustedPackages=[],searchPath,createSchema=true,createNamespace=true,ownsNamespace=createNamespace,namespace='dem_rdb_test_' + randomBytes(8).toString('hex')}) {
     const adminContainer=container();
-    const adminConnection=await adminContainer.get('TeqFw_Dem_RDb_Connection$');
+    const adminConnection=/** @type {any} */ (await adminContainer.get('TeqFw_Dem_RDb_Connection$'));
+    /** @type {any} */
     let admin;
     let adminReady=false;
     let namespaceOwned=!createNamespace && ownsNamespace;
+    /** @type {any} */
     let ownedConnection;
+    /** @type {any} */
     let provider;
     try {
         await adminConnection.init({client:'pg',connection,pool:{min:0,max:1}});
@@ -55,7 +60,7 @@ async function open({schema,map,schemas,trustedPackages=[],searchPath,createSche
         const {model} = compilation;
         const vectorHandler=await c.get('TeqFw_Dem_RDb_Type_Vector_Handler$');
         const runtimeService=await c.get('TeqFw_Dem_Repository_Runtime$');
-        const bindRuntime=model=>runtimeService.bind({model,registry,handlers:[vectorHandler]});
+        const bindRuntime=(/** @type {any} */ model)=>runtimeService.bind({model,registry,handlers:[vectorHandler]});
         const runtime=await bindRuntime(model);
         const adapter = await c.get('TeqFw_Dem_RDb_Adapter$');
         provider = await adapter.open({model,connection:ownedConnection,runtime});
@@ -113,19 +118,19 @@ test('PostgreSQL initializes confirmed DEM history, persists CRUD and Batch, and
             assert.equal(await first.db.schema.hasTable(table),true);
             assert.deepEqual(Object.keys(await first.db(table).columnInfo()),columns);
         }
-        const physicalTables=(await first.db.raw('SELECT tablename FROM pg_tables WHERE schemaname=current_schema() ORDER BY tablename')).rows.map(row=>row.tablename);
+        const physicalTables=(await first.db.raw('SELECT tablename FROM pg_tables WHERE schemaname=current_schema() ORDER BY tablename')).rows.map((/** @type {{tablename:string}} */ row)=>row.tablename);
         assert.deepEqual(physicalTables,['app_item','dem_application','dem_snapshot']);
         const primaryKeys=(await first.db.raw(`SELECT tc.table_name,kcu.column_name FROM information_schema.table_constraints tc
             JOIN information_schema.key_column_usage kcu USING (constraint_catalog,constraint_schema,constraint_name,table_name)
             WHERE tc.constraint_type='PRIMARY KEY' AND tc.table_schema=current_schema() ORDER BY tc.table_name,kcu.ordinal_position`)).rows;
-        assert.deepEqual(primaryKeys.map(row=>[row.table_name,row.column_name]),[['app_item','id'],['dem_application','id'],['dem_snapshot','id']]);
+        assert.deepEqual(primaryKeys.map((/** @type {{table_name:string,column_name:string}} */ row)=>[row.table_name,row.column_name]),[['app_item','id'],['dem_application','id'],['dem_snapshot','id']]);
         const foreignKeys=(await first.db.raw(`SELECT tc.table_name,kcu.column_name,ccu.table_name AS target_table,ccu.column_name AS target_column
             FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu
             ON kcu.constraint_schema=tc.constraint_schema AND kcu.constraint_name=tc.constraint_name AND kcu.table_name=tc.table_name
             JOIN information_schema.constraint_column_usage ccu
             ON ccu.constraint_schema=tc.constraint_schema AND ccu.constraint_name=tc.constraint_name
             WHERE tc.constraint_type='FOREIGN KEY' AND tc.table_schema=current_schema() ORDER BY tc.table_name,kcu.column_name`)).rows;
-        assert.deepEqual(foreignKeys.map(row=>[row.table_name,row.column_name,row.target_table,row.target_column]),[
+        assert.deepEqual(foreignKeys.map((/** @type {{table_name:string,column_name:string,target_table:string,target_column:string}} */ row)=>[row.table_name,row.column_name,row.target_table,row.target_column]),[
             ['dem_application','source_id','dem_snapshot','id'],['dem_application','target_id','dem_snapshot','id'],
         ]);
         const repo=await first.provider.get({path:'/app/item'});
@@ -192,7 +197,7 @@ test('provider detects missing unique constraints', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}],uniqueKeys:{name:['name']}}}});
     try {
         const physical = 'app_item';
-        await env.db.schema.alterTable(physical, t => t.dropUnique(['name'], `${physical}_u_name`));
+        await env.db.schema.alterTable(physical, /** @param {any} t */ t => t.dropUnique(['name'], `${physical}_u_name`));
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
@@ -216,7 +221,7 @@ test('provider rejects unmodelled unique indexes', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
         const physical = 'app_item';
-        await env.db.schema.alterTable(physical, table => table.unique(['name'], {indexName:'extra_unique',useConstraint:false}));
+        await env.db.schema.alterTable(physical, /** @param {any} table */ table => table.unique(['name'], {indexName:'extra_unique',useConstraint:false}));
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
@@ -291,6 +296,7 @@ test('PostgreSQL vectors explicitly round to float32 and reject incompatible lay
     const schemas=[app,infrastructure];
     const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
     let first;
+    /** @type {any} */
     let reopened;
     try {
         first=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace,'public'],createSchema:false,namespace});
@@ -417,7 +423,7 @@ test('PostgreSQL enum checks enforce the declared set and reject tampered layout
         assert.equal(initial.created,true);
         const checks=(await env.db.raw(`SELECT conname,convalidated,pg_get_constraintdef(oid) AS definition
             FROM pg_constraint WHERE conrelid='app_item'::regclass AND contype='c' ORDER BY conname`)).rows;
-        assert.deepEqual(checks.map(check=>[check.conname,check.convalidated,check.definition]),[
+        assert.deepEqual(checks.map((/** @type {{conname:string,convalidated:boolean,definition:string}} */ check)=>[check.conname,check.convalidated,check.definition]),[
             ['app_item_e_optional_state',true,`CHECK ((optional_state = ANY (ARRAY['open'::text, 'owner''s'::text])))`],
             ['app_item_e_state',true,`CHECK ((state = ANY (ARRAY['open'::text, 'owner''s'::text])))`],
         ]);
@@ -427,7 +433,7 @@ test('PostgreSQL enum checks enforce the declared set and reject tampered layout
         await assert.rejects(env.db('app_item').insert({id:'901',state:'invalid',optional_state:null}));
         await assert.rejects(env.db('app_item').where({id:saved.id}).update({state:'invalid'}));
         const before=(await repo.list({selection:{}})).records;
-        await assert.rejects(env.db.transaction(async trx=>{
+        await assert.rejects(env.db.transaction(async (/** @type {any} */ trx)=>{
             await trx('app_item').insert({id:'902',state:'open'});
             await trx('app_item').insert({id:'903',state:'invalid'});
         }));

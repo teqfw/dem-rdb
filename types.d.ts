@@ -51,5 +51,8 @@ declare global {
     type TeqFw_Dem_RDb_Type_Vector_Provider = import("./src/Type/Vector/Provider.mjs").default;
     type TeqFw_Dem_RDb_Type_Vector_Provider__Class = typeof import("./src/Type/Vector/Provider.mjs").default;
     type TeqFw_Dem_RDb_VectorParams = {dimensions: number};
+    type TeqFw_Dem_RDb_Codec_Attribute = {name: string; type: {name: string; params?: Record<string, any>; profile?: {type: string}}};
+    type TeqFw_Dem_RDb_Codec_Entity = {attributes: TeqFw_Dem_RDb_Codec_Attribute[]; primaryKey: string[]|null; uniqueKeys: Record<string, string[]>; indexes: Record<string, {attributes: string[]}>; relations: Record<string, {attributes: string[]}>};
+    type TeqFw_Dem_RDb_RawRow = Record<string, any>;
 }
 export {};

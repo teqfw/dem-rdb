@@ -12,7 +12,9 @@ import {randomBytes} from 'node:crypto';
 
 const connection = {host:process.env.TEQFW_DB__MYSQL_HOST,user:process.env.TEQFW_DB__MYSQL_USER,password:process.env.TEQFW_DB__MYSQL_PASSWORD,database:process.env.TEQFW_DB__MYSQL_DATABASE,...(process.env.TEQFW_DB__MYSQL_SOCKET_PATH ? {socketPath:process.env.TEQFW_DB__MYSQL_SOCKET_PATH} : {})};
 if (Object.values(connection).some(value => !value)) throw new Error('MariaDB test connection environment is incomplete.');
+/** @param {string} path */
 const table = path => path.slice(1).replaceAll('/', '_');
+/** @param {any} options */
 async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberStrings:true}}) {
     const c = new Container({namespaces:[
         {prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'},
@@ -34,7 +36,7 @@ async function open({schema,map,driverOptions={supportBigNumbers:true,bigNumberS
         return {provider,model,adapter,connection:ownedConnection,db,runtime,selection:await c.get('TeqFw_Dem_Dto_Query_Selection__Factory$'),close:async()=>{
             try {
                 for (const [path,entity] of Object.entries(model.entities)) for (const [index,relation] of Object.values(entity.relations).entries())
-                    await db.schema.alterTable(table(path), t=>t.dropForeign(relation.attributes,`${table(path)}_f_${index}`));
+                    await db.schema.alterTable(table(path), /** @param {any} t */ t=>t.dropForeign(relation.attributes,`${table(path)}_f_${index}`));
                 for (const path of Object.keys(model.entities).reverse()) await db.schema.dropTable(table(path));
             } finally { await ownedConnection.disconnect(); }
         }};
@@ -47,7 +49,7 @@ test('binary text preserves trailing spaces, case and Unicode order', async () =
     try {
         const repo = await env.provider.get({path:'/app/item'});
         for (const name of ['a','a ','A','🌍']) await repo.create({record:{name}});
-        assert.deepEqual((await repo.list({selection:{}})).records.map(row=>row.name),['A','a','a ','🌍']);
+        assert.deepEqual((await repo.list({selection:{}})).records.map((/** @type {any} */ row)=>row.name),['A','a','a ','🌍']);
     } finally { await env.close(); }
 });
 
@@ -147,7 +149,7 @@ test('MariaDB enum checks enforce alternatives and reject tampered layouts',asyn
         await assert.rejects(env.db(table(path)).insert({state:'closed',optional_state:null}));
         await assert.rejects(env.db(table(path)).where({state:"owner's"}).update({state:'closed'}));
         await env.db(table(path)).del();
-        await env.db.schema.alterTable(table(path),t=>t.dropChecks([`${table(path)}_e_state`]));
+        await env.db.schema.alterTable(table(path),/** @param {any} t */ t=>t.dropChecks([`${table(path)}_e_state`]));
         await env.db.raw('ALTER TABLE ?? ADD CONSTRAINT ?? CHECK (`state` IN (\'open\'))',[table(path),'wrong_enum_check']);
         await assert.rejects(env.provider.get({path}),{code:'UNSUPPORTED'});
     } finally {await env.close();}
@@ -165,7 +167,7 @@ test('entity containing only a generated identity accepts an empty record', asyn
 test('provider rejects an unexpected uniqueness constraint', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'name',type:{name:'text'}}]}}});
     try {
-        await env.db.schema.alterTable(table('/app/item'), t=>t.unique(['name'],'unexpected_unique'));
+        await env.db.schema.alterTable(table('/app/item'), /** @param {any} t */ t=>t.unique(['name'],'unexpected_unique'));
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
@@ -187,7 +189,7 @@ test('a failed schema creation removes tables created by the attempt', async () 
         const compiler = await c.get('TeqFw_Dem_Compile$');
         const {model} = await compiler.exec({schemas:[{packageName:'test',filename:'schema.json',document:schema}]});
         const provider = await (await c.get('TeqFw_Dem_RDb_Adapter$')).open({model,connection:ownedConnection});
-        db.on('query', query => { if (/^create table/i.test(query.sql) && query.sql.includes(table(second))) throw new Error('Injected DDL failure'); });
+        db.on('query', (/** @type {{sql:string}} */ query) => { if (/^create table/i.test(query.sql) && query.sql.includes(table(second))) throw new Error('Injected DDL failure'); });
         await assert.rejects(provider.createSchema(),{code:'STORAGE'});
         for (const path of [first,second]) assert.equal(await db.schema.hasTable(table(path)),false);
     } finally { await ownedConnection.disconnect(); }

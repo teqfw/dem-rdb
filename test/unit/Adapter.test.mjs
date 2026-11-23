@@ -2,31 +2,31 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import Adapter from '../../src/Adapter.mjs';
 test('adapter rejects a missing connection', async () => {
-    const errors={create:({code,message})=>Object.assign(new Error(message),{code})};
-    const adapter = new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'',batch:{}});
+    const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{code})};
+    const adapter = new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
     await assert.rejects(adapter.open({model:{entities:{}},connection:null}),{code:'INVALID_INPUT'});
     await assert.rejects(adapter.open({model:{entities:{}},knex:null}),{code:'INVALID_INPUT'});
 });
 test('removed host vector-selection configuration is rejected',async()=>{
-    const errors={create:({code,message})=>Object.assign(new Error(message),{code})};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'',batch:{}});
+    const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{code})};
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
     await assert.rejects(adapter.open({model:{entities:{}},connection:{},nativeVectors:{'/app/item':{embedding:true}}}),{code:'INVALID_INPUT'});
 });
 test('removed host foreign-key policy configuration is rejected',async()=>{
-    const errors={create:({code,message})=>Object.assign(new Error(message),{code})};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'',batch:{}});
+    const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{code})};
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
     await assert.rejects(adapter.open({model:{entities:{}},connection:{},foreignKeyActions:{'/app/child':{parent:{onDelete:'CASCADE'}}}}),{code:'INVALID_INPUT'});
 });
 test('MariaDB enum models fail fast when CHECK enforcement is disabled',async()=>{
-    const errors={create:({code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'',batch:{}});
+    const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})};
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
     const model={entities:{'/app/item':{attributes:[{name:'state',type:{name:'enum',params:{values:['open','done']}}}],relations:{},uniqueKeys:{},indexes:{}}}};
     const queries=[];
-    const knex=Object.assign(()=>{}, {client:{config:{client:'mysql2',pool:{max:1}}},raw:async sql=>{
+    const knex=/** @type {any} */ (Object.assign(()=>{}, {client:{config:{client:'mysql2',pool:{max:1}}},raw:async (/** @type {string} */ sql)=>{
         queries.push(sql);
         if (sql.includes('innodb_page_size')) return [[{page_size:16384,sql_mode:'STRICT_TRANS_TABLES',foreign_keys:1}],[]];
         return [[{enabled:0}],[]];
-    }});
+    }}));
     await assert.rejects(adapter.open({model,connection:{getClient:()=>knex}}),{code:'UNSUPPORTED'});
     assert.equal(queries.length,2);
 });

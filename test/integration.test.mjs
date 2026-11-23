@@ -12,6 +12,7 @@ const {schema:valueSchema,map:valueMap,exercise} = await conformanceContainer.ge
 const {schema:atomicSchema,exercise:exerciseAtomic} = await conformanceContainer.get('TeqFw_Dem_Conformance_Atomic$');
 
 
+/** @param {any} options */
 async function open({schema,map,schemas,trustedPackages=[],filename=':memory:',createSchema=true}) {
     const c = new Container({namespaces:[
         {prefix:'TeqFw_Dem_',target:demNamespace.dirAbs,defaultExt:'.mjs'},
@@ -73,10 +74,10 @@ test('SQLite initializes and reopens the same model with ordinary DEM history ta
         assert.deepEqual((await items.list({selection:{}})).records,[{id:'1',name:'Ada'}]);
         assert.equal((await (await second.provider.get({path:'/dem/application'})).list({selection:{}})).records.length,1);
         const tables=await second.db('sqlite_master').select('name').where('type','table').whereNot('name','like','sqlite_%').orderBy('name');
-        assert.deepEqual(tables.map(row=>row.name),['app_item','dem_application','dem_snapshot']);
-        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['app_item'])).map(row=>row.name),['id','name']);
-        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['dem_application'])).map(row=>row.name),['id','scope','source_id','target_id','outcome','evidence']);
-        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['dem_snapshot'])).map(row=>row.name),['id','canonical','fingerprint','canonicalization','provenance']);
+        assert.deepEqual(tables.map((/** @type {{name:string}} */ row)=>row.name),['app_item','dem_application','dem_snapshot']);
+        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['app_item'])).map((/** @type {{name:string}} */ row)=>row.name),['id','name']);
+        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['dem_application'])).map((/** @type {{name:string}} */ row)=>row.name),['id','scope','source_id','target_id','outcome','evidence']);
+        assert.deepEqual((await second.db.raw('SELECT name FROM pragma_table_info(?)',['dem_snapshot'])).map((/** @type {{name:string}} */ row)=>row.name),['id','canonical','fingerprint','canonicalization','provenance']);
 
         const changed=await second.compiler.exec({schemas:[
             {...schemas[0],document:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}},{name:'category',type:{name:'text'}}]}}},
@@ -129,7 +130,7 @@ test('repository provider obtains the model and connection from its host configu
     try {
         const Provider = (await import('../src/Provider.mjs')).default;
         let calls = 0;
-        const provider = new Provider({configuration:{get:async () => { calls++; return {}; }},connection:env.connection,adapter:{open:async () => ({...env.provider,initialize:async ({scope,compilation})=>({created:false,scope,fingerprint:compilation.fingerprint})})}});
+        const provider = new Provider({configuration:{get:async () => { calls++; return {}; }},connection:env.connection,adapter:{open:async () => ({...env.provider,initialize:async (/** @type {any} */ {scope,compilation})=>({created:false,scope,fingerprint:compilation.fingerprint})})},errors:{create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{code})}});
         const repo = await provider.get({path:'/app/item'});
         await repo.create({record:{name:'Ada'}});
         assert.deepEqual(await provider.initialize({scope:'test',compilation:env.compilation}),{created:false,scope:'test',fingerprint:env.compilation.fingerprint});
@@ -244,7 +245,9 @@ test('CFG, real DI routing and independent Providers share owned Connections saf
         primaryFailed=true;
         primaryError=error;
     } finally {
+        /** @type {unknown[]} */
         const failures=[];
+        /** @param {string} label @param {() => Promise<unknown>} operation */
         const close=async(label,operation)=>{try {await operation();} catch(error) {failures.push(new Error(`${label} failed during fixture cleanup.`,{cause:error}));}};
         for(const [label,provider] of [['Provider A',consumerA?.provider],['Provider B',consumerB?.provider]])if(provider)await close(label,()=>provider.close());
         for(const [index,item] of initializationBackends.entries())if(!item.closed)await close(`Initialization backend ${index+1}`,()=>item.backend.close());
@@ -310,7 +313,7 @@ test('declared DEM indexes project to ordered SQLite index columns', async () =>
         const index = await env.db('sqlite_master').select('name').where({type:'index'}).first();
         assert.ok(index);
         const columns = await env.db.raw('SELECT name FROM pragma_index_info(?) ORDER BY seqno',[index.name]);
-        assert.deepEqual(columns.map(row => row.name),['b','a']);
+        assert.deepEqual(columns.map((/** @type {{name:string}} */ row) => row.name),['b','a']);
     } finally { await env.close(); }
 });
 
@@ -331,7 +334,7 @@ test('provider rejects a missing or incompatible physical table', async () => {
         const physical = 'app_item';
         await env.db.schema.dropTable(physical);
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
-        await env.db.schema.createTable(physical, table => table.integer('name'));
+        await env.db.schema.createTable(physical, /** @param {any} table */ table => table.integer('name'));
         await assert.rejects(env.provider.get({path:'/app/item'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
@@ -348,7 +351,7 @@ test('provider rejects missing uniqueness and foreign key constraints', async ()
         await env.db.schema.raw('DROP INDEX ??', [`${parentTable}_u_name`]);
         await assert.rejects(env.provider.get({path:'/app/parent'}),{code:'UNSUPPORTED'});
         await env.db.schema.dropTable(childTable);
-        await env.db.schema.createTable(childTable, table => { table.increments('id'); table.integer('owner').notNullable(); });
+        await env.db.schema.createTable(childTable, /** @param {any} table */ table => { table.increments('id'); table.integer('owner').notNullable(); });
         await assert.rejects(env.provider.get({path:'/app/child'}),{code:'UNSUPPORTED'});
     } finally { await env.close(); }
 });
@@ -406,7 +409,7 @@ test('SQLite vectors use JSON TEXT and preserve input numeric precision',async()
     ],primaryKey:['id']}};
     const env=await open({schema});
     try {
-        const column=(await env.db.raw('PRAGMA table_info(app_item)')).find(item=>item.name==='embedding');
+        const column=(await env.db.raw('PRAGMA table_info(app_item)')).find((/** @type {{name:string,type:string}} */ item)=>item.name==='embedding');
         assert.equal(column.type.toUpperCase(),'TEXT');
         const repo=await env.provider.get({path:'/app/item'});
         const input=[-0,1.2345678901234567];
@@ -437,7 +440,7 @@ test('enum alternatives are enforced by named SQL checks including direct writes
         await assert.rejects(env.db('app_item').where({id:accepted.id}).update({state:'invalid'}));
         await assert.rejects(repo.create({record:{state:'invalid'}}),{code:'INVALID_INPUT'});
         const before=(await repo.list({selection:{}})).records;
-        await assert.rejects(env.db.transaction(async trx=>{
+        await assert.rejects(env.db.transaction(async (/** @type {any} */ trx)=>{
             await trx('app_item').insert({state:'open'});
             await trx('app_item').insert({state:'invalid'});
         }));
@@ -446,7 +449,7 @@ test('enum alternatives are enforced by named SQL checks including direct writes
         await assert.rejects(repo.create({record:{state:'open'}}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
         await env.db.raw('PRAGMA ignore_check_constraints = OFF');
 
-        await env.db.schema.createTable('app_item_replacement',table=>{
+        await env.db.schema.createTable('app_item_replacement',/** @param {any} table */ table=>{
             table.increments('id');
             table.text('state').notNullable();
             table.text('optional_state').nullable();

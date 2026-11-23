@@ -14,7 +14,7 @@ export default class Codec {
         const numeric = function (a) { return a.type.name === 'integer' || ['identity','ref'].includes(a.type.name) && a.type.profile?.type === 'int'; };
         /** @param {any} a @returns {boolean} */
         this.numeric = function (a) { return numeric(a); };
-        /** @param {any} entity @param {string} name @returns {boolean} */
+        /** @param {TeqFw_Dem_RDb_Codec_Entity} entity @param {string} name @returns {boolean} */
         this.indexed = function (entity,name) {
             return [entity.primaryKey,...Object.values(entity.uniqueKeys),...Object.values(entity.indexes).map(index=>index.attributes),...Object.values(entity.relations).map(relation=>relation.attributes)].some(members=>members?.includes(name));
         };
@@ -51,20 +51,20 @@ export default class Codec {
         };
         /**
          * @param {object} deps
-         * @param {any} deps.entity
-         * @param {any} deps.record
+         * @param {TeqFw_Dem_RDb_Codec_Entity} deps.entity
+         * @param {TeqFw_Dem_Record} deps.record
          * @param {string} deps.dialect
          * @returns {any}
          */
         this.encode = function ({entity,record,dialect}) {
             return Object.fromEntries(Object.entries(record).map(([key,value])=>{
-                const a=entity.attributes.find(a=>a.name===key), n=a.type.name;
+                const a=/** @type {TeqFw_Dem_RDb_Codec_Attribute} */ (entity.attributes.find(a=>a.name===key)), n=a.type.name;
                 if (value===null) return [key,null];
                 const vector=n==='teqfw.dem_rdb.vector';
                 const type=this.type({attribute:a,dialect,indexed:this.indexed(entity,key)});
-                if (['identity','ref'].includes(n) && a.type.profile.type==='int') {
+                if (['identity','ref'].includes(n) && (/** @type {any} */ (a.type.profile)).type==='int') {
                     const max=dialect==='mysql2' ? 18446744073709551615n : 9223372036854775807n;
-                    if (BigInt(value)>max) throw errors.create({code:'UNSUPPORTED',message:'Identity exceeds native 64-bit storage capacity.'});
+                    if (BigInt(/** @type {any} */ (value))>max) throw errors.create({code:'UNSUPPORTED',message:'Identity exceeds native 64-bit storage capacity.'});
                     return [key,String(value)];
                 }
                 if (numeric(a) && type==='integer') {
@@ -77,21 +77,21 @@ export default class Codec {
                     throw errors.create({code:'UNSUPPORTED',message:'Text cannot be represented losslessly in the selected physical encoding.'});
                 if (n==='binary') value=Buffer.from(String(value),'base64');
                 else if (vector && dialect==='pg') {
-                    if (!Array.isArray(value) || value.length!==a.type.params.dimensions || value.some(component=>!Number.isFinite(component) || !Number.isFinite(Math.fround(component))))
+                    if (!Array.isArray(value) || value.length!==(/** @type {any} */ (a.type.params)).dimensions || value.some(component=>!Number.isFinite(component) || !Number.isFinite(Math.fround(component))))
                         throw errors.create({code:'UNSUPPORTED',message:'Vector values exceed pgvector float32 capacity or have an invalid dimension.'});
                     value='['+value.map(component=>{
                         const stored=Math.fround(component);
                         return Object.is(stored,-0)?'-0':String(stored);
                     }).join(',')+']';
                 } else if (vector && dialect==='sqlite3') {
-                    value='['+value.map(component=>Object.is(component,-0)?'-0':String(component)).join(',')+']';
+                    value='['+(/** @type {any} */ (value)).map((/** @type {number} */ component)=>Object.is(component,-0)?'-0':String(component)).join(',')+']';
                 } else if (n==='json') value=JSON.stringify(value,(_key,item)=>item && typeof item==='object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map(k=>[k,item[k]])) : item);
                 if (dialect==='mysql2' && ['longblob','varbinary(512)'].includes(type) && !Buffer.isBuffer(value)) value=Buffer.from(String(value),'utf8');
-                if (type==='varbinary(512)' && Buffer.byteLength(value)>512) throw errors.create({code:'UNSUPPORTED',message:'Indexed MariaDB value exceeds 512 bytes.'});
+                if (type==='varbinary(512)' && Buffer.byteLength(/** @type {any} */ (value))>512) throw errors.create({code:'UNSUPPORTED',message:'Indexed MariaDB value exceeds 512 bytes.'});
                 return [key,value];
             }));
         };
-        /** @param {any} entity @param {any} row @param {any} [normalizer] @param {string} [dialect] @returns {any} */
+        /** @param {TeqFw_Dem_RDb_Codec_Entity} entity @param {any} row @param {any} [normalizer] @param {string} [dialect] @returns {any} */
         this.decode = function (entity,row,normalizer=normalize,dialect='sqlite3') {
             if (!row) return null;
             try {

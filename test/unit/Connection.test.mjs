@@ -8,7 +8,7 @@ test('connection creates and destroys its package-owned Knex client once',async(
     const source={client:'sqlite3',connection:{filename:':memory:'},useNullAsDefault:true,pool:{min:1,max:1}};
     await connection.init(source);
     const client=connection.getClient();
-    assert.equal(await client.raw('SELECT 1 AS value').then(result=>result[0].value),1);
+    assert.equal(await client.raw('SELECT 1 AS value').then((/** @type {any[]} */ result)=>result[0].value),1);
     source.connection.filename='changed';
     assert.equal(connection.getClient(),client);
     await connection.disconnect();

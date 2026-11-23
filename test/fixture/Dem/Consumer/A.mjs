@@ -1,4 +1,7 @@
 // @ts-check
 /** @namespace Test_Dem_Consumer_A @description Consumer with one selected repository and batch provider. */
-export default class ConsumerA { /** @param {{provider:any,batch:any}} deps */ constructor({provider,batch}) { this.provider=provider;this.batch=batch; } }
+export default class ConsumerA {
+    /** @param {{provider:any,batch:any}} deps */
+    constructor(deps) { const {provider,batch}=deps;this.provider=provider;this.batch=batch; }
+}
 export const __deps__=Object.freeze({default:Object.freeze({provider:'TeqFw_Dem_Api_RepositoryProvider$',batch:'TeqFw_Dem_Api_RepositoryBatch$'})});

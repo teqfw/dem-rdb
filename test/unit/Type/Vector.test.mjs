@@ -13,7 +13,7 @@ test('vector type definition fixes its dense numeric domain and dimension parame
 });
 
 test('vector Runtime handler copies values and preserves JavaScript precision',()=>{
-    const errors={create:({code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})};
+    const errors=/** @type {any} */ ({create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})});
     const handler=new Handler({errors});
     const input=[0.1,1.2345678901234567];
     const output=handler.normalize(input,{dimensions:2});

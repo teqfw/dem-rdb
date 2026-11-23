@@ -4,7 +4,7 @@ export default class Main {
     /** @param {{inner:any}} deps */
     constructor({inner}) {
         let accesses=0;
-        this.init=cfg=>inner.init(cfg);
+        this.init=(/** @type {any} */ cfg)=>inner.init(cfg);
         this.getClient=()=>{accesses++;return inner.getClient();};
         this.getClientCalls=()=>accesses;
         this.disconnect=()=>inner.disconnect();

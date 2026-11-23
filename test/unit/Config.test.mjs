@@ -5,7 +5,7 @@ import Config from '../../src/Config.mjs';
 test('configuration normalizes names, overlays explicit fields and caches frozen values',()=>{
     const values={CLIENT:'sqlite3',FILENAME:'default.sqlite',USE_NULL_AS_DEFAULT:'yes',EXTRA:{connection:{filename:'extra.sqlite'},pool:{min:1,max:1}},MAIN_DB_CLIENT:'pg',MAIN_DB_HOST:'db.local',MAIN_DB_PORT:'5432',MAIN_DB_SEARCH_PATH:'app, shared',MAIN_DB_EXTRA:{connection:{host:'wrong',port:123,user:'extra'},pool:{max:3}}};
     let reads=0;
-    const config=new Config({reader:{get:name=>{assert.equal(name,'TEQFW_DEM_RDB');reads++;return values;}}});
+    const config=new Config({reader:{get:(/** @type {string} */ name)=>{assert.equal(name,'TEQFW_DEM_RDB');reads++;return values;}}});
     const main=config.get('MAIN-db');
     assert.equal(main.client,'pg');
     assert.deepEqual(main.connection,{user:'extra',host:'db.local',port:5432});

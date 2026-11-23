@@ -10,8 +10,11 @@ export default class Connection {
      */
     constructor({createRequire}) {
         let state = 'new';
+        /** @type {any|undefined} */
         let client;
+        /** @type {Promise<void>|undefined} */
         let initPromise;
+        /** @type {Promise<void>|undefined} */
         let disconnectPromise;
         /** @param {any} value @returns {any} */
         const clone = value => JSON.parse(JSON.stringify(value));

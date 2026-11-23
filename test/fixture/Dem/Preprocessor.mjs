@@ -15,9 +15,9 @@ const connections=new Map([
 /** @param {any} id @returns {boolean} */
 const contract=id=>id.addressKind==='teq' && id.exportName==='default' && id.lifestyle==='S' && id.wrappers.length===0;
 /** @param {any} context @param {string} address @returns {number} */
-const occurrences=(context,address)=>context.stack.filter((item)=>item.address===address).length;
+const occurrences=(context,address)=>context.stack.filter((/** @type {{address:string}} */ item)=>item.address===address).length;
 export default function Preprocessor() {
-    return function (id,context) {
+    return function (/** @type {any} */ id,/** @type {any} */ context) {
         const repo=['TeqFw_Dem_Api_RepositoryProvider','TeqFw_Dem_Api_RepositoryBatch'].includes(id.address);
         const config=id.address==='TeqFw_Dem_RDb_Api_Configuration';
         const connection=id.address==='TeqFw_Dem_RDb_Connection';

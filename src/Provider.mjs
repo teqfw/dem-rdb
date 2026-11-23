@@ -12,7 +12,11 @@ export default class Provider {
      * @param {any} deps.errors
      */
     constructor({adapter,configuration,connection,errors}) {
-        let pending,closePromise,closed=false;
+        /** @type {Promise<import('../types.d.ts').RdbBackend>|undefined} */
+        let pending;
+        /** @type {Promise<void>|undefined} */
+        let closePromise;
+        let closed=false;
         /** @returns {Promise<any>} */
         const backend=async function () {
             if (closed) throw errors.create({code:'STORAGE',message:'Provider is closed.'});
