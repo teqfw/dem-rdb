@@ -10,6 +10,26 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MARIADB_DATABASE: dem_test
+          MARIADB_USER: dem_test
+          MARIADB_PASSWORD: dem_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEQFW_DB__MYSQL_HOST: 127.0.0.1
+      TEQFW_DB__MYSQL_USER: dem_test
+      TEQFW_DB__MYSQL_PASSWORD: dem_test
+      TEQFW_DB__MYSQL_DATABASE: dem_test
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
