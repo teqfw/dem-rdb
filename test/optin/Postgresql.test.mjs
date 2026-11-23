@@ -359,8 +359,8 @@ test('PostgreSQL DEM relation actions cascade and must match on history reopen',
         const parent=(await (await first.provider.get({path:'/app/parent'})).create({record:{}})).record;
         const child=(await (await first.provider.get({path:'/app/child'})).create({record:{parent_id:parent.id}})).record;
         await assert.rejects(first.db('app_child').insert({id:'900',parent_id:'999'}));
-        const actions=(await first.db.raw(`SELECT confupdtype,confdeltype FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'`)).rows[0];
-        assert.deepEqual(actions,{confupdtype:'c',confdeltype:'c'});
+        const actions=(await first.db.raw(`SELECT confupdtype,confdeltype,condeferrable,condeferred FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'`)).rows[0];
+        assert.deepEqual(actions,{confupdtype:'c',confdeltype:'c',condeferrable:false,condeferred:false});
         await first.db('app_parent').where({id:parent.id}).update({id:'20'});
         assert.equal(String((await first.db('app_child').where({id:child.id}).first()).parent_id),'20');
         await first.close({preserveSchema:true});
@@ -375,10 +375,30 @@ test('PostgreSQL DEM relation actions cascade and must match on history reopen',
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
         await reopened.db('app_parent').where({id:'20'}).delete();
         assert.equal((await reopened.db('app_child').count({count:'*'}).first()).count,'0');
+        const [{conname}]= (await reopened.db.raw(`SELECT conname FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'`)).rows;
+        await reopened.db.raw('ALTER TABLE ?? ALTER CONSTRAINT ?? DEFERRABLE INITIALLY DEFERRED',['app_child',conname]);
+        await assert.rejects(reopened.provider.initialize({scope:'pg-cascade',compilation:reopened.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
     } finally {
         if(reopened) await reopened.close();
         if(first) await first.close();
     }
+});
+
+test('PostgreSQL update result includes values changed by a self-referential cascade',async()=>{
+    const schema={$format:2,$namespace:'/app/',node:{
+        attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'code',type:{name:'text'}},{name:'parent',type:{name:'text'}}],
+        uniqueKeys:{by_code:['code']},
+        relations:{parent:{attributes:['parent'],onUpdate:'cascade',target:{path:'/app/node',attributes:['code']}}},
+    }};
+    const env=await open({schema});
+    try {
+        const repo=await env.provider.get({path:'/app/node'});
+        await repo.create({record:{code:'old',parent:'old'}});
+        const updated=await repo.update({key:{kind:'primary',values:{id:'1'}},changes:{code:'new'}});
+        assert.equal(updated.record.code,'new');
+        assert.equal(updated.record.parent,'new');
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record,updated.record);
+    } finally {await env.close();}
 });
 
 test('PostgreSQL enum checks enforce the declared set and reject tampered layouts',async()=>{

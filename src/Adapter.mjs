@@ -236,7 +236,7 @@ export default class Adapter {
                 WHERE ns.nspname=current_schema() AND rel.relname=? AND i.indisunique
                 AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid=i.indexrelid AND c.contype IN ('p','u'))`,[table(path)])).rows;
             if (extraIndexes.length) fail('UNSUPPORTED','Standalone unique indexes are unsupported.');
-            const constraints = (await knex.raw(`SELECT c.contype, c.confupdtype, c.confdeltype, target.relname AS target, target_ns.nspname AS target_schema,
+            const constraints = (await knex.raw(`SELECT c.contype, c.confupdtype, c.confdeltype, c.condeferrable, c.condeferred, target.relname AS target, target_ns.nspname AS target_schema,
                 ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(attnum,ord) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum ORDER BY k.ord) AS local_columns,
                 ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(attnum,ord) JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.attnum ORDER BY k.ord) AS target_columns
                 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace
@@ -249,8 +249,8 @@ export default class Adapter {
             /** @param {string} code @returns {string} */
             const pgAction = code => code==='a' || code==='r' ? 'DEFAULT' : code==='c' ? 'CASCADE' : code;
             if (foreign.some(c=>c.target_schema !== columns[0]?.schema)) fail('UNSUPPORTED','Foreign keys must target the active database schema.');
-            const actual = foreign.map(c=>JSON.stringify([c.target,c.local_columns,c.target_columns,pgAction(c.confupdtype),pgAction(c.confdeltype)])).sort();
-            const expected = Object.values(entity.relations).map(r=>JSON.stringify([table(r.target.path),r.attributes,r.target.attributes,expectedForeignAction(r,'onUpdate'),expectedForeignAction(r,'onDelete')])).sort();
+            const actual = foreign.map(c=>JSON.stringify([c.target,c.local_columns,c.target_columns,pgAction(c.confupdtype),pgAction(c.confdeltype),c.condeferrable,c.condeferred])).sort();
+            const expected = Object.values(entity.relations).map(r=>JSON.stringify([table(r.target.path),r.attributes,r.target.attributes,expectedForeignAction(r,'onUpdate'),expectedForeignAction(r,'onDelete'),false,false])).sort();
             if (JSON.stringify(actual)!==JSON.stringify(expected)) fail('UNSUPPORTED','Database relations do not match the effective model.');
         };
         /**
@@ -447,10 +447,15 @@ export default class Adapter {
                                 const before = await trx(table(path)).select(projection(entity,trx)).where(values).forUpdate().first();
                                 if (!before) return {record:null};
                                 await trx(table(path)).where(values).update(changes);
-                                return {record:fromDb(entity, {...before,...changes},norm,dialect)};
+                                const primary=Object.fromEntries(entity.primaryKey.map(name=>[name,changes[name] ?? before[name]]));
+                                const current=await trx(table(path)).select(projection(entity,trx)).where(primary).first();
+                                return {record:fromDb(entity,current,norm,dialect)};
                             }
                             const rows = await trx(table(path)).where(values).update(changes).returning(projection(entity,trx));
-                            return {record: fromDb(entity, rows[0],norm,dialect)};
+                            if (!rows[0]) return {record:null};
+                            const primary=Object.fromEntries(entity.primaryKey.map(name=>[name,rows[0][name]]));
+                            const current=await trx(table(path)).select(projection(entity,trx)).where(primary).first();
+                            return {record: fromDb(entity,current,norm,dialect)};
                         });
                     }),
                     delete: async params => wrap(async () => { shape(params, ['key']); const values = key(params.key); return knex.transaction(async trx => { if (!deferredForeign) await ensureForeignKeys(trx);

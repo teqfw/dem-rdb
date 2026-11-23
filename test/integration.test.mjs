@@ -383,6 +383,22 @@ test('DEM foreign-key actions apply to multilevel delete/update and are validate
     }
 });
 
+test('repository update returns values changed by a self-referential cascade',async()=>{
+    const schema={$format:2,$namespace:'/app/',node:{
+        attributes:[{name:'id',type:{name:'integer'}},{name:'code',type:{name:'text'}},{name:'parent',type:{name:'text'}}],
+        primaryKey:['id'],uniqueKeys:{by_code:['code']},
+        relations:{parent:{attributes:['parent'],onUpdate:'cascade',target:{path:'/app/node',attributes:['code']}}},
+    }};
+    const env=await open({schema});
+    try {
+        const repo=await env.provider.get({path:'/app/node'});
+        await repo.create({record:{id:'1',code:'old',parent:'old'}});
+        const updated=await repo.update({key:{kind:'primary',values:{id:'1'}},changes:{code:'new'}});
+        assert.deepEqual(updated.record,{id:'1',code:'new',parent:'new'});
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record,updated.record);
+    } finally {await env.close();}
+});
+
 test('SQLite vectors use JSON TEXT and preserve input numeric precision',async()=>{
     const schema={$format:2,$namespace:'/app/',item:{attributes:[
         {name:'id',type:{name:'integer'}},

@@ -12,20 +12,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: teqfw/dem
+          ref: main
+          path: dem
       - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm install
+      - run: npm install --no-save --package-lock=false ./dem
       - run: npm run verify
   postgresql:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18.6
+        image: pgvector/pgvector:pg18
         env:
           POSTGRES_USER: dem_test
           POSTGRES_DB: dem_test
-          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_PASSWORD: dem_test
         ports:
           - 5432:5432
         options: >-
@@ -37,11 +43,32 @@ jobs:
       TEQFW_DB__PG_HOST: 127.0.0.1
       TEQFW_DB__PG_PORT: 5432
       TEQFW_DB__PG_USER: dem_test
+      TEQFW_DB__PG_PASSWORD: dem_test
       TEQFW_DB__PG_DATABASE: dem_test
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: teqfw/dem
+          ref: main
+          path: dem
       - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm install
+      - run: npm install --no-save --package-lock=false ./dem
+      - run: |
+          node --input-type=module <<'NODE'
+          import pg from 'pg';
+          const client = new pg.Client({
+            host:process.env.TEQFW_DB__PG_HOST,
+            port:Number(process.env.TEQFW_DB__PG_PORT),
+            user:process.env.TEQFW_DB__PG_USER,
+            password:process.env.TEQFW_DB__PG_PASSWORD,
+            database:process.env.TEQFW_DB__PG_DATABASE,
+          });
+          await client.connect();
+          await client.query('CREATE EXTENSION vector WITH SCHEMA public');
+          await client.end();
+          NODE
       - run: npm run test:postgresql
