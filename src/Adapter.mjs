@@ -72,7 +72,9 @@ export default class Adapter {
          * @param {any} entity
          * @param {string} dialect
          */
-        const supported = (entity,dialect) => {
+        const supported = (entity,dialect,path) => {
+            if (dialect==='mysql2' && Object.values(entity.relations).some(relation=>relation.target.path===path && relation.onUpdate==='cascade'))
+                fail('UNSUPPORTED','MariaDB does not support self-referential ON UPDATE CASCADE.');
             for (const a of entity.attributes) {
                 const n = a.type.name;
                 if (!['identity','ref','integer','boolean','string','text','uuid','enum','date','datetime','decimal','binary','json','teqfw.dem_rdb.vector'].includes(n)) fail('UNSUPPORTED', 'Unsupported logical type: ' + n);
@@ -306,8 +308,8 @@ export default class Adapter {
                 if (names.some(name=>Buffer.byteLength(name)>maxIdentifier)) fail('UNSUPPORTED','Generated relational constraint name exceeds supported limits.');
             }
             if (!deferredForeign && knex.client.config.pool?.max !== 1) fail('UNSUPPORTED', 'SQLite requires a single connection pool.');
-            for (const entity of Object.values(model.entities)) {
-                supported(entity,knex.client.config.client);
+            for (const [path,entity] of Object.entries(model.entities)) {
+                supported(entity,knex.client.config.client,path);
                 if (mysql) for (const key of [entity.primaryKey, ...Object.values(entity.uniqueKeys), ...Object.values(entity.indexes).map(index => index.attributes)]) {
                     if (key && key.reduce((sum, name) => { const a = entity.attributes.find(item => item.name === name); return sum + (codec.type({attribute:a,dialect:'mysql2',indexed:true}) === 'integer' ? 4 : codec.numeric(a) ? 8 : 512); }, 0) > 3072) fail('UNSUPPORTED', 'MariaDB index exceeds supported width.');
                 }

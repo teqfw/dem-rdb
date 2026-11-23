@@ -30,3 +30,17 @@ test('MariaDB enum models fail fast when CHECK enforcement is disabled',async()=
     await assert.rejects(adapter.open({model,connection:{getClient:()=>knex}}),{code:'UNSUPPORTED'});
     assert.equal(queries.length,2);
 });
+
+test('MariaDB rejects self-referential update cascades before storage access',async()=>{
+    const errors={create:({code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})};
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'',batch:{}});
+    const model={entities:{'/app/node':{
+        attributes:[{name:'id',type:{name:'integer'}},{name:'code',type:{name:'text'}},{name:'parent',type:{name:'text'}}],
+        relations:{parent:{attributes:['parent'],onUpdate:'cascade',target:{path:'/app/node',attributes:['code']}}},
+        uniqueKeys:{by_code:['code']},indexes:{},primaryKey:['id'],
+    }}};
+    const knex=Object.assign(()=>{}, {client:{config:{client:'mysql2',pool:{max:1}}},raw:async()=>assert.fail('Storage must not be accessed.')});
+    await assert.rejects(adapter.open({model,connection:{getClient:()=>knex}}),{
+        name:'DemRepositoryError',code:'UNSUPPORTED',message:'MariaDB does not support self-referential ON UPDATE CASCADE.',
+    });
+});
