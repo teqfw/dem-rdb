@@ -402,12 +402,16 @@ test('repository update returns values changed by a self-referential cascade',as
     } finally {await env.close();}
 });
 
-test('SQLite vectors use JSON TEXT and preserve input numeric precision',async()=>{
+test('SQLite vectors use JSON TEXT and preserve input numeric precision after reopening',async t=>{
     const schema={$format:2,$namespace:'/app/',item:{attributes:[
         {name:'id',type:{name:'integer'}},
         {name:'embedding',type:{name:'teqfw.dem_rdb.vector',params:{dimensions:2}},nullable:true},
     ],primaryKey:['id']}};
-    const env=await open({schema});
+    const directory=await mkdtemp(join(tmpdir(),'dem-rdb-vector-'));
+    t.after(()=>rm(directory,{recursive:true,force:true}));
+    const filename=join(directory,'vectors.sqlite');
+    const env=await open({schema,filename});
+    const updated=[0.2,2.345678901234567];
     try {
         const column=(await env.db.raw('PRAGMA table_info(app_item)')).find((/** @type {{name:string,type:string}} */ item)=>item.name==='embedding');
         assert.equal(column.type.toUpperCase(),'TEXT');
@@ -417,11 +421,19 @@ test('SQLite vectors use JSON TEXT and preserve input numeric precision',async()
         input[0]=9;
         assert.deepEqual(created.record.embedding,[-0,1.2345678901234567]);
         assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record,created.record);
-        await repo.update({key:{kind:'primary',values:{id:'1'}},changes:{embedding:[0.2,2.345678901234567]}});
-        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record.embedding,[0.2,2.345678901234567]);
+        await repo.update({key:{kind:'primary',values:{id:'1'}},changes:{embedding:updated}});
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record.embedding,updated);
+        const stored=await env.db('app_item').where({id:'1'}).first('embedding');
+        assert.equal(typeof stored.embedding,'string');
+        assert.deepEqual(JSON.parse(stored.embedding),updated);
         await assert.rejects(repo.create({record:{id:'2',embedding:[1]}}),{code:'INVALID_INPUT'});
         await assert.rejects(repo.list({selection:{where:{kind:'call',operator:'eq',args:[{kind:'attr',name:'embedding'},{kind:'value',value:[0.2,2.345678901234567]}]}}}),{code:'INVALID_INPUT'});
-    } finally { await env.close(); }
+    } finally { await env.provider.close(); await env.close(); }
+    const reopened=await open({schema,filename,createSchema:false});
+    try {
+        const repo=await reopened.provider.get({path:'/app/item'});
+        assert.deepEqual((await repo.read({key:{kind:'primary',values:{id:'1'}}})).record.embedding,updated);
+    } finally { await reopened.provider.close(); await reopened.close(); }
 });
 
 test('enum alternatives are enforced by named SQL checks including direct writes and nullable values',async()=>{
