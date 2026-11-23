@@ -364,8 +364,9 @@ test('PostgreSQL vectors explicitly round to float32 and reject incompatible lay
 test('PostgreSQL DEM relation actions cascade and must match on history reopen',async()=>{
     const infrastructure=await acquireDemSchema(conformanceContainer);
     const app={packageName:'@example/app',filename:'etc/dem-schema.json',document:{$format:2,$namespace:'/app/',
-        parent:{attributes:[{name:'id',type:{name:'identity'},generation:true}]},
-        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'ref'}}],relations:{parent:{attributes:['parent_id'],onDelete:'cascade',onUpdate:'cascade',target:{path:'/app/parent',attributes:['id']}}}},
+        parent:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'code',type:{name:'integer'}}],uniqueKeys:{by_code:['code']}},
+        child:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'parent_id',type:{name:'integer'}}],uniqueKeys:{by_parent:['parent_id']},relations:{parent:{attributes:['parent_id'],onDelete:'cascade',onUpdate:'cascade',target:{path:'/app/parent',attributes:['code']}}}},
+        leaf:{attributes:[{name:'id',type:{name:'integer'}}],primaryKey:['id'],relations:{child:{attributes:['id'],onDelete:'cascade',onUpdate:'cascade',target:{path:'/app/child',attributes:['parent_id']}}}},
     }};
     const schemas=[app,infrastructure];
     const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
@@ -375,12 +376,15 @@ test('PostgreSQL DEM relation actions cascade and must match on history reopen',
         first=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace],createSchema:false,namespace});
         const initial=await first.provider.initialize({scope:'pg-cascade',compilation:first.compilation});
         assert.equal(initial.created,true);
-        const parent=(await (await first.provider.get({path:'/app/parent'})).create({record:{}})).record;
-        const child=(await (await first.provider.get({path:'/app/child'})).create({record:{parent_id:parent.id}})).record;
+        const parent=(await (await first.provider.get({path:'/app/parent'})).create({record:{code:'10'}})).record;
+        const child=(await (await first.provider.get({path:'/app/child'})).create({record:{parent_id:parent.code}})).record;
         await assert.rejects(first.db('app_child').insert({id:'900',parent_id:'999'}));
         const actions=(await first.db.raw(`SELECT confupdtype,confdeltype,condeferrable,condeferred FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'`)).rows[0];
         assert.deepEqual(actions,{confupdtype:'c',confdeltype:'c',condeferrable:false,condeferred:false});
-        await first.db('app_parent').where({id:parent.id}).update({id:'20'});
+        await (await first.provider.get({path:'/app/leaf'})).create({record:{id:parent.code}});
+        const parentRepo=await first.provider.get({path:'/app/parent'});
+        await parentRepo.update({key:{kind:'primary',values:{id:parent.id}},changes:{code:'20'}});
+        assert.equal(String((await first.db('app_leaf').first()).id),'20');
         assert.equal(String((await first.db('app_child').where({id:child.id}).first()).parent_id),'20');
         await first.close({preserveSchema:true});
         first=undefined;
@@ -392,7 +396,8 @@ test('PostgreSQL DEM relation actions cascade and must match on history reopen',
         await defaultBackend.initialize({scope:'pg-cascade',compilation:reopened.compilation});
         await defaultBackend.close();
         assert.deepEqual((await (await reopened.provider.get({path:'/dem/application'})).list({selection:{}})).records,before);
-        await reopened.db('app_parent').where({id:'20'}).delete();
+        await (await reopened.provider.get({path:'/app/parent'})).delete({key:{kind:'primary',values:{id:parent.id}}});
+        assert.equal((await reopened.db('app_leaf').count({count:'*'}).first()).count,'0');
         assert.equal((await reopened.db('app_child').count({count:'*'}).first()).count,'0');
         const [{conname}]= (await reopened.db.raw(`SELECT conname FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'`)).rows;
         await reopened.db.raw('ALTER TABLE ?? ALTER CONSTRAINT ?? DEFERRABLE INITIALLY DEFERRED',['app_child',conname]);
@@ -401,6 +406,45 @@ test('PostgreSQL DEM relation actions cascade and must match on history reopen',
         if(reopened) await reopened.close();
         if(first) await first.close();
     }
+});
+
+test('PostgreSQL validates foreign-key semantics and reports restrictive writes as relation errors', async () => {
+    const schema={$format:2,$namespace:'/app/',
+        parent:{attributes:[{name:'id',type:{name:'integer'}},{name:'code',type:{name:'integer'}},{name:'part',type:{name:'integer'}}],primaryKey:['id'],uniqueKeys:{by_pair:['code','part']}},
+        child:{attributes:[
+            {name:'id',type:{name:'integer'}},
+            {name:'owner',type:{name:'integer'},nullable:true},
+            {name:'part',type:{name:'integer'}},
+        ],primaryKey:['id'],relations:{parent:{attributes:['owner','part'],target:{path:'/app/parent',attributes:['code','part']}}}},
+    };
+    const env=await open({schema});
+    try {
+        const parent=await env.provider.get({path:'/app/parent'});
+        const parentKey={kind:'primary',values:{id:'1'}};
+        const child=await env.provider.get({path:'/app/child'});
+        const before={id:'1',code:'1',part:'2'};
+        await parent.create({record:before});
+        await child.create({record:{id:'1',owner:'1',part:'2'}});
+        const checkRestrictive=async()=>{
+            await assert.rejects(parent.delete({key:parentKey}),{code:'RELATION'});
+            await assert.rejects(parent.update({key:parentKey,changes:{part:'3'}}),{code:'RELATION'});
+            assert.deepEqual((await parent.read({key:parentKey})).record,before);
+        };
+        await checkRestrictive();
+
+        const [{conname}]=(await env.db.raw("SELECT conname FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'")).rows;
+        const replace=async (match,validation)=>{
+            await env.db.raw('ALTER TABLE app_child DROP CONSTRAINT ??',[conname]);
+            await env.db.raw('ALTER TABLE app_child ADD CONSTRAINT ?? FOREIGN KEY (owner, part) REFERENCES app_parent (code, part) '+match+' ON UPDATE RESTRICT ON DELETE RESTRICT '+validation,[conname]);
+        };
+        await replace('MATCH SIMPLE','');
+        await env.provider.get({path:'/app/child'});
+        await checkRestrictive();
+        for (const [match,validation] of [['MATCH FULL',''],['MATCH SIMPLE','NOT VALID']]) {
+            await replace(match,validation);
+            await assert.rejects(env.provider.get({path:'/app/child'}),{code:'UNSUPPORTED'});
+        }
+    } finally { await env.close(); }
 });
 
 test('PostgreSQL update result includes values changed by a self-referential cascade',async()=>{

@@ -60,7 +60,7 @@ export default class Adapter {
             if (error?.code === 'ER_DUP_ENTRY') fail('CONFLICT', 'Unique constraint failed.');
             if (['ER_NO_REFERENCED_ROW_2','ER_ROW_IS_REFERENCED_2'].includes(error?.code)) fail('RELATION', 'Relation constraint failed.');
             if (error?.code === '23505' || /UNIQUE constraint failed|PRIMARY KEY constraint failed/i.test(message)) fail('CONFLICT', 'Unique constraint failed.');
-            if (error?.code === '23503' || /FOREIGN KEY constraint failed/i.test(message)) fail('RELATION', 'Relation constraint failed.');
+            if (['23503','23001'].includes(error?.code) || /FOREIGN KEY constraint failed/i.test(message)) fail('RELATION', 'Relation constraint failed.');
             fail('STORAGE', 'Relational storage operation failed.');
         };
         /**
@@ -236,7 +236,7 @@ export default class Adapter {
                 WHERE ns.nspname=current_schema() AND rel.relname=? AND i.indisunique
                 AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid=i.indexrelid AND c.contype IN ('p','u'))`,[table(path)])).rows);
             if (extraIndexes.length) fail('UNSUPPORTED','Standalone unique indexes are unsupported.');
-            const constraints = /** @type {TeqFw_Dem_RDb_RawRow[]} */ ((await knex.raw(`SELECT c.contype, c.confupdtype, c.confdeltype, c.condeferrable, c.condeferred, target.relname AS target, target_ns.nspname AS target_schema,
+            const constraints = /** @type {TeqFw_Dem_RDb_RawRow[]} */ ((await knex.raw(`SELECT c.contype, c.confupdtype, c.confdeltype, c.confmatchtype, c.convalidated, c.condeferrable, c.condeferred, target.relname AS target, target_ns.nspname AS target_schema,
                 ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(attnum,ord) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum ORDER BY k.ord) AS local_columns,
                 ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(attnum,ord) JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.attnum ORDER BY k.ord) AS target_columns
                 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace
@@ -248,6 +248,8 @@ export default class Adapter {
             const foreign = constraints.filter(c=>c.contype==='f');
             /** @param {string} code @returns {string} */
             const pgAction = code => code==='a' || code==='r' ? 'DEFAULT' : code==='c' ? 'CASCADE' : code;
+            if (foreign.some(c=>c.confmatchtype!=='s' || !c.convalidated))
+                fail('UNSUPPORTED','PostgreSQL foreign keys must use MATCH SIMPLE and be validated.');
             if (foreign.some(c=>c.target_schema !== columns[0]?.schema)) fail('UNSUPPORTED','Foreign keys must target the active database schema.');
             const actual = foreign.map(c=>JSON.stringify([c.target,c.local_columns,c.target_columns,pgAction(c.confupdtype),pgAction(c.confdeltype),c.condeferrable,c.condeferred])).sort();
             const expected = Object.values(entity.relations).map(r=>JSON.stringify([table(r.target.path),r.attributes,r.target.attributes,expectedForeignAction(r,'onUpdate'),expectedForeignAction(r,'onDelete'),false,false])).sort();
