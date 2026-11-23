@@ -41,13 +41,17 @@ export default class Adapter {
             .filter(token => !token.startsWith('--') && !token.startsWith('/*'));
         /** @param {string[]} tokens @returns {string[][]} */
         const sqliteTableClauses = tokens => {
-            const clauses = [[]];
+            /** @type {string[][]} */ const clauses = [[]];
             let depth = 1;
             for (const token of tokens.slice(tokens.indexOf('(') + 1)) {
                 if (token === '(') depth++;
                 if (token === ')' && --depth === 0) break;
                 if (token === ',' && depth === 1) clauses.push([]);
-                else clauses.at(-1).push(token);
+                else {
+                    const current = clauses.at(-1);
+                    if (!current) throw new Error('SQLite table clause grouping is unbalanced.');
+                    current.push(token);
+                }
             }
             return clauses;
         };
@@ -66,6 +70,7 @@ export default class Adapter {
         /**
          * @param {TeqFw_Dem_Entity} entity
          * @param {string} dialect
+         * @param {string} path
          */
         const supported = (entity,dialect,path) => {
             if (dialect==='mysql2' && Object.values(entity.relations).some(relation=>relation.target.path===path && relation.onUpdate==='cascade'))

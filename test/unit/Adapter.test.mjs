@@ -32,8 +32,9 @@ test('MariaDB enum models fail fast when CHECK enforcement is disabled',async()=
 });
 
 test('MariaDB rejects self-referential update cascades before storage access',async()=>{
-    const errors={create:({code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'',batch:{}});
+    const createError=(/** @type {{code:string;message:string}} */ {code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code});
+    const errors={create:createError};
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:/** @type {any} */ (()=>''),batch:{}});
     const model={entities:{'/app/node':{
         attributes:[{name:'id',type:{name:'integer'}},{name:'code',type:{name:'text'}},{name:'parent',type:{name:'text'}}],
         relations:{parent:{attributes:['parent'],onUpdate:'cascade',target:{path:'/app/node',attributes:['code']}}},

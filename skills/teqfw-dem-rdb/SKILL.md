@@ -20,13 +20,13 @@ representable as finite float32 values. Use compatible selections for a shared
 scope; the host manages any representation or data migration. See the README
 for setup and limitations.
 
-Select physical cascade actions with `foreignKeyActions` in `adapter.open` or
-the Provider's host Configuration, for example
-`{'/app/child': {parent: {onDelete: 'CASCADE', onUpdate: 'CASCADE'}}}`.
-Keys are effective entity paths and relation names. Each omitted event retains
-the engine's non-cascading default; `CASCADE` is the supported explicit value.
-Reopening a history-managed layout verifies the actions; hosts migrate existing
-constraints explicitly. See the README for engine verification.
+Declare relation actions in the Format 2 DEM relation with `onDelete` and
+`onUpdate`, each set to `restrict` or `cascade`; omission means `restrict`.
+DEM-RDB derives SQL constraints from the compiled model and validates them when
+reopening a history-managed layout. Batch commands resolve logical cascade effects
+before the next command and publish only after commit. Unsupported engine/action
+combinations fail explicitly; hosts migrate existing constraints themselves. See
+the README for engine-specific behavior and verification.
 
 DEM-RDB creates a named SQL `CHECK` from each Core enum's declared alternatives
 and verifies the constraint on history-managed reopen. This applies to direct

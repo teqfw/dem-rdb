@@ -433,7 +433,7 @@ test('PostgreSQL validates foreign-key semantics and reports restrictive writes 
         await checkRestrictive();
 
         const [{conname}]=(await env.db.raw("SELECT conname FROM pg_constraint WHERE conrelid='app_child'::regclass AND contype='f'")).rows;
-        const replace=async (match,validation)=>{
+        const replace=async (/** @type {string} */ match, /** @type {string} */ validation)=>{
             await env.db.raw('ALTER TABLE app_child DROP CONSTRAINT ??',[conname]);
             await env.db.raw('ALTER TABLE app_child ADD CONSTRAINT ?? FOREIGN KEY (owner, part) REFERENCES app_parent (code, part) '+match+' ON UPDATE RESTRICT ON DELETE RESTRICT '+validation,[conname]);
         };

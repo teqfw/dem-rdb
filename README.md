@@ -5,13 +5,13 @@ Relational persistence for `@teqfw/dem`. The host composes and compiles the Effe
 ## Installation and host composition
 
 ```sh
-npm install @teqfw/dem@^2.0.0 @teqfw/dem-rdb@^2.0.0 @teqfw/di@^2.11.0 sqlite3
+npm install @teqfw/dem@^2.1.0 @teqfw/dem-rdb@^2.1.0 @teqfw/di@^2.11.0 sqlite3
 # For PostgreSQL install pg instead; for MariaDB install mysql2 instead.
 ```
 
-Version 2.x requires DEM 2.x and Format 2 schema descriptors. It changes the
-0.2.x physical layout and connection composition; existing databases require an
-explicit host-managed migration. The host installs the selected Knex driver.
+Version 2.1.0 requires DEM `^2.1.0` and Format 2 schema descriptors. It changes
+the 0.2.x physical layout and connection composition; existing databases require
+an explicit host-managed migration. The host installs the selected Knex driver.
 Register `TeqFw_Cfg_`, load the selected CFG sources with `TeqFw_Cfg_Loader$`
 before resolving RDB Config, and supply the `TEQFW_DEM_RDB` fragment for the
 selected connection. The host owns storage initialization and connection shutdown.

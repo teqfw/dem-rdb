@@ -415,7 +415,7 @@ test('SQLite rejects stored constraints with altered semantics', async () => {
     const path = '/app/item';
     try {
         const {sql} = await env.db('sqlite_master').where({type:'table',name:'app_item'}).first('sql');
-        const replaceLayout = async ddl => {
+        const replaceLayout = async (/** @type {string} */ ddl) => {
             assert.notEqual(ddl,sql);
             await env.db.schema.dropTable('app_item');
             await env.db.raw(ddl);
