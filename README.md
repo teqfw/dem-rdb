@@ -88,6 +88,14 @@ leave checks enabled on database sessions, including sessions used for direct
 SQL. The host must explicitly migrate old layouts and resolve invalid rows;
 initialization does not add or repair constraints on existing tables.
 
+On PostgreSQL, an enum compatibility rejection remains a `DemRepositoryError`
+with code `UNSUPPORTED` and includes a safe `details` object. It identifies the
+`compatibility` stage, entity path, physical table, and a stable reason:
+`missing_check`, `unexpected_check`, `unvalidated_check`, or
+`definition_mismatch`. Known column and constraint names are included; check-count
+failures also include `expectedCount` and `actualCount`. The diagnostic excludes
+row values, SQL, constraint definitions, connection settings, and secrets.
+
 `Config.get()` reads the `TEQFW_DEM_RDB` CFG fragment and returns a cached, deeply frozen Knex configuration. Default settings use keys such as `TEQFW_DEM_RDB__CLIENT`, `__FILENAME` and `__EXTRA`; named `main` settings use `TEQFW_DEM_RDB__MAIN_CLIENT`, `__MAIN_FILENAME` and `__MAIN_EXTRA`. Named settings do not inherit defaults. `EXTRA` accepts a JSON object; explicit standard fields override matching `EXTRA.connection` values.
 
 The Provider opens lazily, caches its backend and borrows the DI-selected Connection. Its `initialize({scope, compilation})` confirms model history before `get` or `execute` can access a history-managed model. Models without DEM history keep direct repository access. Closing a backend invalidates its repositories without disconnecting a shared Connection. Route DEM RepositoryProvider requests to the selected DEM-RDB Provider through DI preprocessing. The host initializes storage before resolving application consumers.

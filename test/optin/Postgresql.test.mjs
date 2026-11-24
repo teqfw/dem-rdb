@@ -473,7 +473,7 @@ test('PostgreSQL enum checks enforce the declared set and reject tampered layout
     ]}}};
     const schemas=[app,infrastructure];
     const namespace='dem_rdb_test_'+randomBytes(8).toString('hex');
-    let env;
+    /** @type {any} */ let env;
     try {
         env=await open({schemas,trustedPackages:['@teqfw/dem'],searchPath:[namespace],createSchema:false,namespace});
         const initial=await env.provider.initialize({scope:'pg-enum',compilation:env.compilation});
@@ -496,10 +496,27 @@ test('PostgreSQL enum checks enforce the declared set and reject tampered layout
         }));
         assert.deepEqual((await repo.list({selection:{}})).records,before);
 
-        await env.db.schema.raw('ALTER TABLE ?? DROP CONSTRAINT ??', ['app_item','app_item_e_state']);
-        await env.db.schema.raw('ALTER TABLE ?? ADD CONSTRAINT ?? CHECK (state IS NOT NULL)', ['app_item','app_item_e_state']);
         const applications=(await (await env.provider.get({path:'/dem/application'})).list({selection:{}})).records;
-        await assert.rejects(env.provider.initialize({scope:'pg-enum',compilation:env.compilation}),{name:'DemRepositoryError',code:'UNSUPPORTED'});
+        /** @param {Record<string,string|number>} expected */
+        const assertDiagnostic=async expected=>{
+            await assert.rejects(env.provider.initialize({scope:'pg-enum',compilation:env.compilation}),(/** @type {any} */ error)=>{
+                assert.equal(error.name,'DemRepositoryError');
+                assert.equal(error.code,'UNSUPPORTED');
+                assert.ok(Object.keys(error.details ?? {}).every(key=>['stage','entityPath','table','reason','column','constraint','expectedCount','actualCount'].includes(key)));
+                for(const [key,value] of Object.entries(expected)) assert.equal(error.details?.[key],value);
+                return true;
+            });
+        };
+        await env.db.schema.raw('ALTER TABLE ?? DROP CONSTRAINT ??', ['app_item','app_item_e_state']);
+        await assertDiagnostic({stage:'compatibility',entityPath:'/app/item',table:'app_item',column:'state',constraint:'app_item_e_state',reason:'missing_check',expectedCount:2,actualCount:1});
+        await env.db.schema.raw('ALTER TABLE ?? ADD CONSTRAINT ?? CHECK (state IS NOT NULL)', ['app_item','app_item_e_state']);
+        await assertDiagnostic({reason:'definition_mismatch',entityPath:'/app/item',table:'app_item',column:'state',constraint:'app_item_e_state'});
+        await env.db.schema.raw('ALTER TABLE ?? DROP CONSTRAINT ??', ['app_item','app_item_e_state']);
+        await env.db.schema.raw('ALTER TABLE ?? ADD CONSTRAINT ?? CHECK (state IS NOT NULL) NOT VALID', ['app_item','app_item_e_state']);
+        await assertDiagnostic({reason:'unvalidated_check',entityPath:'/app/item',table:'app_item',column:'state',constraint:'app_item_e_state'});
+        await env.db.schema.raw('ALTER TABLE ?? DROP CONSTRAINT ??', ['app_item','app_item_e_state']);
+        await env.db.schema.raw('ALTER TABLE ?? ADD CONSTRAINT ?? CHECK (state IS NOT NULL)', ['app_item','extra_check']);
+        await assertDiagnostic({reason:'unexpected_check',entityPath:'/app/item',table:'app_item',constraint:'extra_check',expectedCount:2,actualCount:2});
         await assert.deepEqual((await (await env.provider.get({path:'/dem/application'})).list({selection:{}})).records,applications);
     } finally {if(env) await env.close();}
 });

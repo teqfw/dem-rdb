@@ -19,9 +19,14 @@ export default class Adapter {
         /**
          * @param {any} code
          * @param {string} message
+         * @param {any} [details]
          * @returns {never}
          */
-        const fail = (code, message) => { throw errors.create({code, message}); };
+        const fail = (code, message, details) => {
+            const error=errors.create({code,message});
+            if (details) error.details=details;
+            throw error;
+        };
         /**
          * @param {any} arg
          * @param {Array<string>} fields
@@ -226,7 +231,19 @@ export default class Adapter {
             const checks=/** @type {TeqFw_Dem_RDb_RawRow[]} */ ((await knex.raw(`SELECT c.conname AS name,c.convalidated AS validated,pg_get_constraintdef(c.oid) AS definition
                 FROM pg_constraint c JOIN pg_class rel ON rel.oid=c.conrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace
                 WHERE ns.nspname=current_schema() AND rel.relname=? AND c.contype='c'`,[table(path)])).rows);
-            if (checks.length!==enumAttributes.length) fail('UNSUPPORTED','Database enum checks do not match the effective model.');
+            {
+                const expectedNames=enumAttributes.map(attribute=>enumConstraint(path,attribute.name));
+                const unexpected=checks.find(check=>!expectedNames.includes(check.name));
+                const missing=enumAttributes.find(attribute=>!checks.some(check=>check.name===enumConstraint(path,attribute.name)));
+                if (unexpected || missing || checks.length!==enumAttributes.length) {
+                    const attribute=unexpected ? undefined : missing;
+                    fail('UNSUPPORTED','Database enum checks do not match the effective model.',{
+                        stage:'compatibility',entityPath:path,table:table(path),reason:unexpected?'unexpected_check':'missing_check',
+                        ...(unexpected ? {constraint:unexpected.name} : attribute ? {column:attribute.name,constraint:enumConstraint(path,attribute.name)} : {}),
+                        expectedCount:enumAttributes.length,actualCount:checks.length,
+                    });
+                }
+            }
             for (const attribute of enumAttributes) {
                 const name=enumConstraint(path,attribute.name);
                 const check=checks.find(item=>item.name===name);
@@ -234,7 +251,10 @@ export default class Adapter {
                 const values=(/** @type {string[]} */ ((/** @type {any} */ (attribute.type.params)).values)).map(value=>`'${value.replaceAll("'","''")}'::text`).join(', ');
                 if (!column) fail('UNSUPPORTED','Database enum column does not match the effective model.');
                 const expected=`CHECK ((${column.quoted_name} = ANY (ARRAY[${values}])))`;
-                if (!check || !check.validated || check.definition!==expected) fail('UNSUPPORTED','Database enum check does not match the declared alternatives.');
+                const details={stage:'compatibility',entityPath:path,table:table(path),column:attribute.name,constraint:name};
+                if (!check) fail('UNSUPPORTED','Database enum check is missing.',{...details,reason:'missing_check'});
+                if (!check.validated) fail('UNSUPPORTED','Database enum check is not validated.',{...details,reason:'unvalidated_check'});
+                if (check.definition!==expected) fail('UNSUPPORTED','Database enum check does not match the declared alternatives.',{...details,reason:'definition_mismatch'});
             }
             const extraIndexes = /** @type {TeqFw_Dem_RDb_RawRow[]} */ ((await knex.raw(`SELECT i.indexrelid FROM pg_index i
                 JOIN pg_class rel ON rel.oid=i.indrelid JOIN pg_namespace ns ON ns.oid=rel.relnamespace

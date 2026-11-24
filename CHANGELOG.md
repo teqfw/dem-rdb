@@ -1,5 +1,9 @@
 # Release Notes
 
+## Unreleased
+
+- Add structured, allowlisted PostgreSQL enum compatibility diagnostics while preserving `UNSUPPORTED` rejection behavior.
+
 ## 2.1.0 — 2026-11-23
 
 - Add DEM `restrict` and `cascade` relation actions, derive SQL foreign-key policies from the compiled model, and validate them on reopen.

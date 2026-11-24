@@ -21,6 +21,17 @@ export interface RdbConnection {
 export interface RdbConfigurationProvider {
     get(): Promise<RdbConfiguration>;
 }
+export interface RdbCompatibilityDiagnostic {
+    stage: 'compatibility';
+    entityPath: string;
+    table: string;
+    reason: 'missing_check'|'unexpected_check'|'unvalidated_check'|'definition_mismatch';
+    column?: string;
+    constraint?: string;
+    expectedCount?: number;
+    actualCount?: number;
+}
+export type RdbRepositoryError = import('@teqfw/dem').DemRepositoryError & {details?: RdbCompatibilityDiagnostic};
 export interface RdbBackend {
     execute(params: {operations: DemBatchOperation[]}): Promise<DemBatchResult>;
     get(params: {path: string}): Promise<import('@teqfw/dem').DemRepository>;
