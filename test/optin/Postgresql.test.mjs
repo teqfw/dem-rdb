@@ -175,6 +175,63 @@ test('generated identity avoids an explicitly supplied identity', async () => {
     } finally { await env.close(); }
 });
 
+test('native identity allocation survives deletion, ordered Batch, seed deletion and concurrent writes', async () => {
+    const schema={$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true}]}};
+    const namespace='dem_rdb_identity_'+randomBytes(8).toString('hex');
+    let env = await open({schema,namespace});
+    let reopened;
+    try {
+        const repo = await env.provider.get({path:'/app/item'});
+        const physical = await env.db.raw(`SELECT a.attidentity AS mode, pg_get_serial_sequence('app_item','id') AS sequence
+            FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+            WHERE c.relname='app_item' AND a.attname='id'`);
+        assert.equal(physical.rows[0].mode, 'd');
+        assert.ok(physical.rows[0].sequence);
+
+        const first = await repo.create({record:{}});
+        assert.equal(first.record.id, '1');
+        await repo.delete({key:{kind:'primary',values:{id:first.record.id}}});
+        const second = (await repo.create({record:{}})).record;
+        assert.equal(second.id, '2');
+
+        const batch = await env.provider.execute({operations:[
+            {path:'/app/item',method:'delete',params:{key:{kind:'primary',values:{id:second.id}}}},
+            {path:'/app/item',method:'create',params:{record:{}}},
+            {path:'/app/item',method:'create',params:{record:{id:'500'}}},
+            {path:'/app/item',method:'delete',params:{key:{kind:'primary',values:{id:'500'}}}},
+            {path:'/app/item',method:'create',params:{record:{}}},
+        ]});
+        assert.equal(batch.results[1].record.id, '3');
+        assert.equal(batch.results[4].record.id, '501');
+
+        const mixed = await Promise.all([
+            repo.create({record:{id:'2000'}}),
+            ...Array.from({length:8}, () => repo.create({record:{}})),
+        ]);
+        assert.equal(new Set(mixed.map(item=>item.record.id)).size, 9);
+        const concurrent = mixed.slice(1);
+        await repo.create({record:{id:'10'}});
+        await assert.rejects(env.provider.execute({operations:[
+            {path:'/app/item',method:'create',params:{record:{}}},
+            {path:'/app/item',method:'create',params:{record:{id:'10'}}},
+        ]}), {code:'CONFLICT'});
+        const afterRollback = await repo.create({record:{}});
+        assert.ok(BigInt(afterRollback.record.id)>BigInt(Math.max(...concurrent.map(item=>Number(item.record.id)))));
+        assert.equal((await repo.read({key:{kind:'primary',values:{id:'2000'}}})).record.id,'2000');
+
+        const lastId=afterRollback.record.id;
+        await env.close({preserveSchema:true});
+        reopened=await open({schema,namespace,createNamespace:false,ownsNamespace:true,createSchema:false});
+        const reopenedRepo=await reopened.provider.get({path:'/app/item'});
+        assert.ok(BigInt((await reopenedRepo.create({record:{}})).record.id)>BigInt(lastId));
+        await reopened.db.raw('ALTER TABLE app_item ALTER COLUMN id DROP IDENTITY');
+        await assert.rejects(reopened.provider.get({path:'/app/item'}), {code:'UNSUPPORTED'});
+    } finally {
+        if (reopened) await reopened.close();
+        else await env.close();
+    }
+});
+
 test('out-of-range identity is rejected without an insert', async () => {
     const env = await open({schema:{$format:2,$namespace:'/app/',item:{attributes:[{name:'id',type:{name:'identity'},generation:true},{name:'name',type:{name:'text'}}]}}});
     try {

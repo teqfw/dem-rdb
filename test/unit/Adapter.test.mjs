@@ -3,23 +3,33 @@ import assert from 'node:assert/strict';
 import Adapter from '../../src/Adapter.mjs';
 test('adapter rejects a missing connection', async () => {
     const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{code})};
-    const adapter = new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
+    const adapter = new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},batch:{}});
     await assert.rejects(adapter.open({model:{entities:{}},connection:null}),{code:'INVALID_INPUT'});
     await assert.rejects(adapter.open({model:{entities:{}},knex:null}),{code:'INVALID_INPUT'});
 });
+test('adapter rejects non-integer identity profiles before storage access', async () => {
+    const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})};
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},batch:{}});
+    const model={entities:{'/app/item':{
+        attributes:[{name:'id',type:{name:'identity',profile:{type:'uuid'}},nullable:false,generation:true}],
+        primaryKey:['id'],uniqueKeys:{},indexes:{},relations:{},
+    }}};
+    const knex=Object.assign(()=>assert.fail('Storage must not be accessed.'),{client:{config:{client:'pg',pool:{max:1}}}});
+    await assert.rejects(adapter.open({model,connection:{getClient:()=>knex}}),{code:'UNSUPPORTED'});
+});
 test('removed host vector-selection configuration is rejected',async()=>{
     const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{code})};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},batch:{}});
     await assert.rejects(adapter.open({model:{entities:{}},connection:{},nativeVectors:{'/app/item':{embedding:true}}}),{code:'INVALID_INPUT'});
 });
 test('removed host foreign-key policy configuration is rejected',async()=>{
     const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{code})};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},batch:{}});
     await assert.rejects(adapter.open({model:{entities:{}},connection:{},foreignKeyActions:{'/app/child':{parent:{onDelete:'CASCADE'}}}}),{code:'INVALID_INPUT'});
 });
 test('MariaDB enum models fail fast when CHECK enforcement is disabled',async()=>{
     const errors={create:(/** @type {{code:string,message:string}} */ {code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code})};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:()=>'00000000-0000-4000-8000-000000000000',batch:{}});
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},batch:{}});
     const model={entities:{'/app/item':{attributes:[{name:'state',type:{name:'enum',params:{values:['open','done']}}}],relations:{},uniqueKeys:{},indexes:{}}}};
     const queries=[];
     const knex=/** @type {any} */ (Object.assign(()=>{}, {client:{config:{client:'mysql2',pool:{max:1}}},raw:async (/** @type {string} */ sql)=>{
@@ -34,7 +44,7 @@ test('MariaDB enum models fail fast when CHECK enforcement is disabled',async()=
 test('MariaDB rejects self-referential update cascades before storage access',async()=>{
     const createError=(/** @type {{code:string;message:string}} */ {code,message})=>Object.assign(new Error(message),{name:'DemRepositoryError',code});
     const errors={create:createError};
-    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},randomUUID:/** @type {any} */ (()=>''),batch:{}});
+    const adapter=new Adapter({normalize:{},selection:{},errors,codec:{},evaluate:{},batch:{}});
     const model={entities:{'/app/node':{
         attributes:[{name:'id',type:{name:'integer'}},{name:'code',type:{name:'text'}},{name:'parent',type:{name:'text'}}],
         relations:{parent:{attributes:['parent'],onUpdate:'cascade',target:{path:'/app/node',attributes:['code']}}},

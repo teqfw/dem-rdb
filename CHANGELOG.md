@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Use native PostgreSQL identity columns for increasing generated integer IDs, including after deletion and explicit seeds. Existing layouts require host-directed migration.
+- Restrict identity and ref to integer profiles while retaining ordinary UUID attributes.
 - Add structured, allowlisted PostgreSQL enum compatibility diagnostics while preserving `UNSUPPORTED` rejection behavior.
 
 ## 2.1.0 — 2026-11-23

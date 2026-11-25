@@ -12,9 +12,8 @@ export default class Adapter {
      * @param {any} deps.codec
      * @param {any} deps.evaluate
      * @param {any} deps.batch
-     * @param {typeof import("node:crypto").randomUUID} deps.randomUUID
      */
-    constructor({normalize, selection, errors, codec, evaluate, randomUUID, batch}) {
+    constructor({normalize, selection, errors, codec, evaluate, batch}) {
         const historyAccess = Symbol('historyAccess');
         /**
          * @param {any} code
@@ -83,6 +82,8 @@ export default class Adapter {
             for (const a of entity.attributes) {
                 const n = a.type.name;
                 if (!['identity','ref','integer','boolean','string','text','uuid','enum','date','datetime','decimal','binary','json','teqfw.dem_rdb.vector'].includes(n)) fail('UNSUPPORTED', 'Unsupported logical type: ' + n);
+                if (['identity','ref'].includes(n) && (!a.type.profile || a.type.profile.type !== 'int' || !['small','regular','large'].includes(a.type.profile.capacity)))
+                    fail('UNSUPPORTED', 'Identity and ref attributes require an integer profile.');
                 if (a.generation && !(n === 'identity' && entity.primaryKey?.length === 1)) fail('UNSUPPORTED', 'Unsupported generation.');
                 if (n==='teqfw.dem_rdb.vector') codec.type({attribute:a,dialect,indexed:codec.indexed(entity,a.name)});
             }
@@ -214,7 +215,8 @@ export default class Adapter {
         const validatePostgresql = async function ({knex, path, entity}) {
             const columns = /** @type {TeqFw_Dem_RDb_RawRow[]} */ ((await knex.raw(`SELECT a.attname AS name, quote_ident(a.attname) AS quoted_name, format_type(a.atttypid,a.atttypmod) AS type,
                 a.attnotnull AS required, COALESCE(array_position(p.conkey,a.attnum),0) AS pk,
-                coll.collname AS collation, n.nspname AS schema
+                coll.collname AS collation, n.nspname AS schema, a.attidentity AS identity_mode,
+                pg_get_serial_sequence(format('%I.%I',n.nspname,c.relname),a.attname) AS identity_sequence
                 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                 JOIN pg_attribute a ON a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
                 LEFT JOIN pg_constraint p ON p.conrelid=c.oid AND p.contype='p'
@@ -225,7 +227,8 @@ export default class Adapter {
             for (const attribute of entity.attributes) {
                 const column = columns.find(c=>c.name===attribute.name);
                 const type = codec.type({attribute,dialect:'pg',indexed:codec.indexed(entity,attribute.name)});
-                if (!column || column.type !== type || Boolean(column.required) === Boolean(attribute.nullable) || (type === 'text' && column.collation !== 'C')) fail('UNSUPPORTED','Database column does not match the effective model.');
+                const generated = attribute.type.name === 'identity' && (/** @type {any} */ (attribute.type.profile)).type === 'int' && attribute.generation;
+                if (!column || column.type !== type || Boolean(column.required) === Boolean(attribute.nullable) || (type === 'text' && column.collation !== 'C') || (column.identity_mode === 'd') !== Boolean(generated) || Boolean(column.identity_sequence) !== Boolean(generated)) fail('UNSUPPORTED','Database column does not match the effective model.');
             }
             const enumAttributes=entity.attributes.filter(attribute=>attribute.type.name==='enum');
             const checks=/** @type {TeqFw_Dem_RDb_RawRow[]} */ ((await knex.raw(`SELECT c.conname AS name,c.convalidated AS validated,pg_get_constraintdef(c.oid) AS definition
@@ -446,22 +449,14 @@ export default class Adapter {
                         create: async (/** @type {any} */ params) => wrap(async () => {
                         shape(params, ['record']);
                         const logical = norm.record({entity,record:params.record,mode:'create'});
-                        for (const a of entity.attributes) if (a.type.name==='identity' && (/** @type {any} */ (a.type.profile)).type==='uuid' && a.generation && !Object.hasOwn(logical,a.name)) Object.defineProperty(logical,a.name,{value:randomUUID(),enumerable:true,writable:true,configurable:true});
                         const value = toDb(entity,logical,pg,mysql);
                         return knex.transaction(async (/** @type {any} */ trx) => {
                             if (!deferredForeign) await ensureForeignKeys(trx);
                             if (mysql) { const [rows] = await trx.raw('SELECT @@foreign_key_checks AS enabled, @@sql_mode AS mode'); if (Number(rows[0].enabled) !== 1 || !/(?:^|,)STRICT_(?:ALL|TRANS)_TABLES(?:,|$)/.test(String(rows[0].mode))) fail('UNSUPPORTED', 'MariaDB foreign keys and strict mode are required.'); }
                             if (mysql && hasEnums) await ensureMariaEnumChecks(trx);
                             const generated = entity.attributes.find(a => a.type.name === 'identity' && (/** @type {any} */ (a.type.profile)).type === 'int' && a.generation);
-                            if (pg && generated) {
+                            if (pg && generated)
                                 await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [table(path)]);
-                                if (!Object.hasOwn(value, generated.name)) {
-                                    const highest = await trx(table(path)).select(trx.raw('CAST(MAX(??) AS TEXT) AS value',[generated.name])).first();
-                                    const next = BigInt(highest.value ?? '0') + 1n;
-                                    if (next > 9223372036854775807n) fail('STORAGE', 'Identity capacity exhausted.');
-                                    Object.defineProperty(value,generated.name,{value:next.toString(),enumerable:true,writable:true,configurable:true});
-                                }
-                            }
                             if (mysql) {
                                 await trx(table(path)).insert(value);
                                 if (generated && !Object.hasOwn(value, generated.name)) {
@@ -471,6 +466,10 @@ export default class Adapter {
                                 return {record: fromDb(entity, value,norm,dialect)};
                             }
                             const rows = await trx(table(path)).insert(value).returning(projection(entity,trx));
+                            if (pg && generated && Object.hasOwn(value, generated.name)) {
+                                await trx.raw(`SELECT setval(pg_get_serial_sequence(?, ?), GREATEST(COALESCE((SELECT MAX(??) FROM ??), 1), COALESCE(pg_sequence_last_value(pg_get_serial_sequence(?, ?)), 1)), true)`,
+                                    [table(path), generated.name, generated.name, table(path), table(path), generated.name]);
+                            }
                             return {record: fromDb(entity, rows[0],norm,dialect)};
                         });
                     }),
@@ -558,7 +557,7 @@ export default class Adapter {
                             if (mysql) /** @type {any} */ (t).engine('InnoDB');
                             for (const a of entity.attributes) {
                                 let c;
-                                if (a.type.name === 'identity' && (/** @type {any} */ (a.type.profile)).type === 'int' && a.generation) { if (pg) t.bigInteger(a.name).primary(); else if (mysql) t.specificType(a.name, 'bigint unsigned NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
+                                if (a.type.name === 'identity' && (/** @type {any} */ (a.type.profile)).type === 'int' && a.generation) { if (pg) t.specificType(a.name, 'bigint GENERATED BY DEFAULT AS IDENTITY').primary(); else if (mysql) t.specificType(a.name, 'bigint unsigned NOT NULL AUTO_INCREMENT').primary(); else t.increments(a.name); continue; }
                                 const physical = codec.type({attribute:a,dialect:knex.client.config.client,indexed:codec.indexed(entity,a.name)});
                                 c = t.specificType(a.name,pg && physical==='text' ? 'text COLLATE "C"' : physical);
                                 if (!a.nullable) c.notNullable();
@@ -681,4 +680,4 @@ export default class Adapter {
         };
     }
 }
-export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',randomUUID:'node:crypto__randomUUID',codec:'TeqFw_Dem_RDb_Codec$',evaluate:'TeqFw_Dem_Repository_Select$',batch:'TeqFw_Dem_Repository_Batch$'})});
+export const __deps__ = Object.freeze({default:Object.freeze({normalize:'TeqFw_Dem_Repository_Normalize$', selection:'TeqFw_Dem_Dto_Query_Selection__Factory$', errors:'TeqFw_Dem_Repository_Error$',codec:'TeqFw_Dem_RDb_Codec$',evaluate:'TeqFw_Dem_Repository_Select$',batch:'TeqFw_Dem_Repository_Batch$'})});
