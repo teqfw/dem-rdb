@@ -1,6 +1,6 @@
 {
   "name": "@teqfw/dem-rdb",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Relational persistence adapter for TeqFW Domain Entity Model.",
   "type": "module",
   "license": "Apache-2.0",
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@teqfw/cfg": "^2.0.0",
-    "@teqfw/dem": "^2.1.0",
+    "@teqfw/dem": "^2.2.0",
     "knex": "^3.1.0"
   },
   "peerDependencies": {
