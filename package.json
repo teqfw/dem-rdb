@@ -1,67 +1,67 @@
 {
   "name": "@teqfw/dem-rdb",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Relational persistence adapter for TeqFW Domain Entity Model.",
-  "type": "module",
   "license": "Apache-2.0",
-  "engines": {
-    "node": ">=22"
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/teqfw/dem-rdb.git"
   },
+  "homepage": "https://github.com/teqfw/dem-rdb#readme",
   "files": [
-    "src/",
     "CHANGELOG.md",
-    "README.md",
     "LICENSE",
-    "types.d.ts",
-    "skills/"
+    "README.md",
+    "skills/",
+    "src/",
+    "types.d.ts"
   ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./types.d.ts"
+    }
+  },
+  "types": "types.d.ts",
   "scripts": {
     "test": "find test/unit test/integration.test.mjs -name '*.test.mjs' -print0 | xargs -0 node --test",
-    "verify": "npm test && npm run test:mariadb",
-    "typecheck": "tsc -p jsconfig.json",
+    "test:mariadb": "node --test test/optin/Mariadb.test.mjs",
     "test:postgresql": "node --test test/optin/Postgresql.test.mjs",
-    "test:mariadb": "node --test test/optin/Mariadb.test.mjs"
+    "typecheck": "tsc -p jsconfig.json",
+    "verify": "npm test && npm run test:mariadb"
   },
   "dependencies": {
     "@teqfw/cfg": "^2.0.0",
     "@teqfw/dem": "^2.2.0",
     "knex": "^3.1.0"
   },
-  "peerDependencies": {
-    "@teqfw/di": "^2.11.0"
-  },
   "devDependencies": {
-    "sqlite3": "^6.0.1",
-    "typescript": "^5.9.3",
     "@types/node": "^22.20.5",
+    "mysql2": "^3.24.5",
     "pg": "^8.23.1",
-    "mysql2": "^3.24.5"
+    "sqlite3": "^6.0.1",
+    "typescript": "^5.9.3"
+  },
+  "peerDependencies": {
+    "@teqfw/di": "^2.12.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "teqfw": {
     "fw": {
       "di": {
         "namespaces": [
           {
-            "prefix": "TeqFw_Dem_RDb_",
+            "ext": ".mjs",
             "path": "./src",
-            "ext": ".mjs"
+            "prefix": "TeqFw_Dem_RDb_"
           }
         ]
       }
     }
-  },
-  "types": "types.d.ts",
-  "exports": {
-    ".": {
-      "types": "./types.d.ts"
-    }
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/teqfw/dem-rdb.git"
-  },
-  "homepage": "https://github.com/teqfw/dem-rdb#readme",
-  "publishConfig": {
-    "access": "public"
   }
 }

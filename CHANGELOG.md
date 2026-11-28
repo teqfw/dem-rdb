@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 2.2.1 — 2026-11-28
+
+- Require `@teqfw/di` `^2.12.1`.
+- Stop checking JavaScript files from dependencies during typecheck and remove deprecated compiler path configuration.
+- Use validator-compatible JSDoc array types.
+
 ## 2.2.0 — 2026-11-25
 
 - Use native PostgreSQL identity columns for increasing generated integer IDs, including after deletion and explicit seeds. Existing layouts require host-directed migration.

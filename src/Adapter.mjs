@@ -40,12 +40,12 @@ export default class Adapter {
         const table = path => path.slice(1).replaceAll('/', '_');
         /** @param {string} path @param {string} attribute @returns {string} */
         const enumConstraint = (path,attribute) => `${table(path)}_e_${attribute}`;
-        /** @param {string} sql @returns {string[]} */
+        /** @param {string} sql @returns {Array<string>} */
         const sqliteTokens = sql => (sql.match(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[\w$\u0080-\uffff]+|[^\s]/gu) ?? [])
             .filter(token => !token.startsWith('--') && !token.startsWith('/*'));
-        /** @param {string[]} tokens @returns {string[][]} */
+        /** @param {Array<string>} tokens @returns {Array<Array<string>>} */
         const sqliteTableClauses = tokens => {
-            /** @type {string[][]} */ const clauses = [[]];
+            /** @type {Array<Array<string>>} */ const clauses = [[]];
             let depth = 1;
             for (const token of tokens.slice(tokens.indexOf('(') + 1)) {
                 if (token === '(') depth++;

@@ -5,7 +5,7 @@ Relational persistence for `@teqfw/dem`. The host composes and compiles the Effe
 ## Installation and host composition
 
 ```sh
-npm install @teqfw/dem@^2.2.0 @teqfw/dem-rdb@^2.2.0 @teqfw/di@^2.11.0 sqlite3
+npm install @teqfw/dem@^2.2.0 @teqfw/dem-rdb@^2.2.0 @teqfw/di@^2.12.1 sqlite3
 # For PostgreSQL install pg instead; for MariaDB install mysql2 instead.
 ```
 
